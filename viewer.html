@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Run Viewer 8.0 (Proximity Popups)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="data:,">
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; background: #111; color: #eee; }
+        
+        /* --- CONTROLS --- */
+        #controls { padding: 10px; background: #222; border-bottom: 1px solid #444; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; z-index: 1000; }
+        
+        .led { width: 10px; height: 10px; border-radius: 50%; background: #333; display: inline-block; border: 1px solid #000; }
+        .led.rx.on { background: #0f0; box-shadow: 0 0 8px #0f0; } 
+        .led.tx.on { background: #f00; box-shadow: 0 0 8px #f00; } 
+        
+        /* Buttons & Toggles */
+        .toggle-label { font-size: 0.9em; color: #ccc; cursor: pointer; display: flex; align-items: center; gap: 5px; user-select: none; border: 1px solid #444; padding: 4px 8px; border-radius: 4px; background: #333; }
+        .toggle-label:hover { background: #444; }
+        .lbl-vel { border-left: 3px solid #4facfe; }
+        .lbl-acc { border-left: 3px solid #ff0055; }
+        
+        /* Play/Pause Button */
+        #btnPlayPause {
+            background: #444; color: #fff; border: 1px solid #666; 
+            border-radius: 4px; width: 32px; height: 30px; 
+            font-size: 16px; cursor: pointer; display: flex; 
+            align-items: center; justify-content: center;
+        }
+        #btnPlayPause:hover { background: #666; border-color: #888; }
+        #btnPlayPause:active { background: #888; }
+
+        /* Inputs */
+        .inp-num { background: #333; border: 1px solid #555; color: #fff; width: 40px; padding: 4px; border-radius: 3px; text-align: center; }
+        .small-label { font-size: 0.8em; color: #aaa; }
+
+        /* --- HUD STATS --- */
+        .stats { 
+            font-family: 'Consolas', 'Monaco', monospace; 
+            background: rgba(0, 0, 0, 0.8); border: 1px solid #444;
+            padding: 8px 15px; border-radius: 8px; margin-left: auto;
+            display: flex; flex-direction: column; align-items: flex-end; gap: 2px;
+            min-width: 140px; box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+        }
+        .stat-row { display: flex; align-items: baseline; gap: 8px; }
+        .stat-time { color: #eee; font-size: 1.2em; font-weight: bold; border-bottom: 1px solid #333; margin-bottom: 2px; width: 100%; text-align: right; }
+        .val-blue { color: #4facfe; font-size: 1.1em; font-weight: bold; }
+        .val-red { color: #ff0055; font-size: 1.1em; font-weight: bold; }
+        .unit { font-size: 0.7em; color: #888; width: 40px; text-align: left; }
+
+        /* --- MAP & GRAPH --- */
+        #map-container { flex-grow: 1; position: relative; width: 100%; overflow: hidden; }
+        #map { width: 100%; height: 100%; background: #222; }
+        
+        #charts-container { height: 35vh; background: #1a1a1a; position: relative; border-top: 1px solid #444; }
+        
+        svg { display: block; width: 100%; height: 100%; overflow: visible; }
+        text { font-family: 'Segoe UI', sans-serif; font-size: 10px; fill: #aaa; pointer-events: none; }
+        
+        .grid-line { stroke: #333; stroke-width: 1; vector-effect: non-scaling-stroke; }
+        .grid-line-minor { stroke: #2a2a2a; stroke-width: 1; vector-effect: non-scaling-stroke; stroke-dasharray: 2; }
+        .axis-line { stroke: #666; stroke-width: 1; vector-effect: non-scaling-stroke; }
+        
+        .line-vel { fill: none; stroke: #4facfe; stroke-width: 2; vector-effect: non-scaling-stroke; }
+        .line-acc { fill: none; stroke: #ff0055; stroke-width: 1.5; opacity: 0.8; vector-effect: non-scaling-stroke; }
+        .cursor-line { stroke: white; stroke-width: 1; vector-effect: non-scaling-stroke; }
+        
+        .graph-photo-dot { fill: #ffd700; stroke: #000; stroke-width: 1px; cursor: pointer; transition: r 0.1s; }
+        .graph-photo-dot:hover { r: 6px; fill: white; }
+
+        #scrubber-container { padding: 5px 10px; background: #111; }
+        input[type=range] { width: 100%; cursor: pointer; accent-color: #4facfe; }
+
+        /* POPUP STYLES */
+        .leaflet-popup-content-wrapper { background: rgba(20,20,20,0.95); color: #eee; border: 1px solid #555; }
+        .leaflet-popup-tip { background: rgba(20,20,20,0.95); }
+        .leaflet-popup-close-button { color: #fff !important; }
+        button.jump-btn { background: #444; color: white; border: 1px solid #666; padding: 4px 8px; cursor: pointer; border-radius: 4px; width: 100%; }
+        button.jump-btn:hover { background: #666; }
+        /* --- LIGHTWEIGHT MARKER (No Images on Map) --- */
+        .simple-marker-wrap { position: relative; width: 100%; height: 100%; }
+        
+        /* Yellow Dot */
+        .simple-dot {
+            width: 14px; height: 14px; 
+            background: #ffd700; 
+            border: 2px solid #000; 
+            border-radius: 50%; 
+            position: absolute; top: 50%; left: 50%; 
+            transform: translate(-50%, -50%);
+            box-shadow: 0 0 4px rgba(0,0,0,0.8);
+            cursor: pointer;
+            z-index: 10;
+        }
+        
+        /* Heading Arrow */
+        .simple-arrow {
+            position: absolute; top: -12px; left: 50%; margin-left: -6px;
+            width: 0; height: 0;
+            border-left: 6px solid transparent;
+            border-right: 6px solid transparent;
+            border-bottom: 10px solid #ffd700;
+            filter: drop-shadow(0 0 2px black);
+            pointer-events: none; /* Let clicks pass to the dot */
+            transform-origin: 6px 16px; /* Rotate around the dot center */
+        }
+        
+        /* Hover Effect */
+        .simple-dot:hover { background: #fff; transform: translate(-50%, -50%) scale(1.2); transition: 0.1s; }
+    </style>
+</head>
+<body>
+
+    <div id="controls">
+        <div style="display:flex; gap:5px;">
+            <div id="led-rx" class="led rx" title="RX"></div>
+            <div id="led-tx" class="led tx" title="TX"></div>
+        </div>
+        
+        <button id="btnPlayPause" title="Play/Pause Main Video">⏯</button>
+
+        <label class="toggle-label"><input type="checkbox" id="chkSync" checked> Sync</label>
+        
+        <label class="toggle-label" title="Switch between Metric (km/h) and Scientific (m/s)">
+            <input type="checkbox" id="chkUnits" checked> <span id="lblUnits">km/h</span>
+        </label>
+
+        <label class="toggle-label lbl-vel"><input type="checkbox" id="chkVel" checked> Speed</label>
+        <label class="toggle-label lbl-acc"><input type="checkbox" id="chkAcc" checked> Acc</label>
+
+
+        <div style="display:flex; align-items:center; gap:4px; border:1px solid #444; padding:2px 6px; border-radius:4px; background:#333;">
+            <span class="small-label">Pre:</span>
+            <input type="number" id="inpPre" class="inp-num" value="2" min="0" step="0.5" title="Open popup N seconds before">
+            <span class="small-label">Post:</span>
+            <input type="number" id="inpPost" class="inp-num" value="4" min="0" step="0.5" title="Close popup N seconds after">
+        </div>
+
+        <label class="toggle-label"><input type="checkbox" id="chkScale" checked> Fit:</label>
+        <input type="number" id="inpDuration" class="inp-num" value="180" min="1" style="width:50px;">
+        
+        <input type="file" id="fileInput" accept=".json" style="max-width: 180px;">
+        
+        <div class="stats">
+            <div class="stat-time" id="syncTime">00:00</div>
+            <div class="stat-row">
+                <span id="valVel" class="val-blue">0.0</span><span class="unit" id="unitVel">km/h</span>
+            </div>
+            <div class="stat-row">
+                <span id="valAcc" class="val-red">0.0</span><span class="unit" id="unitAcc">km/h/s</span>
+            </div>
+        </div>
+    </div>
+
+    <div id="map-container"><div id="map"></div></div>
+    
+    <div id="charts-container">
+        <svg id="chart-svg" preserveAspectRatio="none"></svg>
+        <div id="chart-overlay" style="position:absolute;top:0;left:0;width:100%;height:100%;cursor:crosshair;"></div>
+    </div>
+    
+    <div id="scrubber-container"><input type="range" id="timeSlider" min="0" max="100" value="0" step="0.1"></div>
+
+    <script>
+        // --- CONFIG ---
+        const map = L.map('map', { 
+            zoomControl: true,
+            renderer: L.canvas() 
+        }).setView([0, 0], 2);
+        
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+        L.control.scale({ imperial: false }).addTo(map);
+
+        // Layers
+        let pathLayer = L.polyline([], {color: '#4facfe', weight: 5, opacity: 0.9, lineJoin: 'round'}).addTo(map);
+        
+        const runnerIcon = L.divIcon({
+            className: '',
+            html: `
+                <div id="runner-marker-icon" style="position:relative; width:24px; height:24px;">
+                    <div style="width:20px; height:20px; background:#4facfe; border:2px solid white; border-radius:50%; box-shadow:0 0 5px black; position:absolute; top:2px; left:2px;"></div>
+                    <div id="runner-arrow" style="position:absolute; top:-8px; left:50%; margin-left:-6px; width:0; height:0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 10px solid #4facfe; transform-origin: 6px 20px; filter: drop-shadow(0 0 1px black);"></div>
+                </div>`,
+            iconSize: [24, 24], iconAnchor: [12, 12]
+        });
+        const runnerMarker = L.marker([0,0], {icon: runnerIcon, zIndexOffset: 2000}).addTo(map);
+        
+        const syncChannel = new BroadcastChannel('song_sync_channel');
+        
+        let runData = null;
+        let photoMarkers = [];
+        let maxRunTime = 100;
+        let isDragging = false;
+        let ignoreSyncUntil = 0;
+        let autoOpenedMarker = null; // Tracks which marker the script opened
+
+        // --- PLAY/PAUSE LOGIC ---
+        document.getElementById('btnPlayPause').addEventListener('click', () => {
+            const msg = { type: 'toggle_pause' }; 
+            syncChannel.postMessage(msg);
+            if (window.opener && !window.opener.closed) window.opener.postMessage(msg, '*');
+            
+            const btn = document.getElementById('btnPlayPause');
+            btn.style.borderColor = '#4facfe';
+            setTimeout(() => btn.style.borderColor = '#666', 200);
+        });
+
+        // --- CORE LOGIC ---
+        function getTargetDuration() {
+            let val = parseFloat(document.getElementById('inpDuration').value);
+            return (val > 0) ? val : 180;
+        }
+
+        function getScaleFactor() {
+            if (!document.getElementById('chkScale').checked || maxRunTime <= 0) return 1.0;
+            return getTargetDuration() / maxRunTime;
+        }
+
+        function handleIncoming(data) {
+            if (Date.now() < ignoreSyncUntil) return;
+            if (data.duration && data.duration > 0) {
+                const inp = document.getElementById('inpDuration');
+                if (Math.abs(parseFloat(inp.value) - data.duration) > 1) {
+                    inp.value = Math.round(data.duration);
+                    if(runData) initVisualizer(); 
+                }
+            }
+            const songTime = parseFloat(data.time);
+            const factor = getScaleFactor();
+            const localTime = songTime / factor;
+
+            if (!isDragging && !isNaN(localTime)) {
+                const led = document.getElementById('led-rx');
+                led.classList.add('on'); setTimeout(() => led.classList.remove('on'), 100);
+                document.getElementById('timeSlider').value = localTime;
+                updateVisuals(localTime);
+            }
+        }
+        syncChannel.onmessage = (e) => { if(e.data) handleIncoming(e.data); };
+        window.addEventListener('message', (e) => { if(e.data) handleIncoming(e.data); });
+
+        function safeJump(localT) {
+            if (isNaN(localT)) return;
+            document.getElementById('timeSlider').value = localT;
+            updateVisuals(localT);
+            ignoreSyncUntil = Date.now() + 500;
+            if (!document.getElementById('chkSync').checked) return;
+            const factor = getScaleFactor();
+            let songTime = localT * factor;
+            const target = getTargetDuration();
+            if (songTime >= target) songTime = target - 0.1;
+            const led = document.getElementById('led-tx');
+            led.classList.add('on'); setTimeout(() => led.classList.remove('on'), 100);
+            const msg = { type: 'sync_time', time: songTime };
+            if (window.opener && !window.opener.closed) window.opener.postMessage(msg, '*');
+            syncChannel.postMessage(msg);
+        }
+
+// --- 5. INITIALIZE VISUALIZER ---
+        function initVisualizer() {
+            if (!runData) return;
+            const points = runData.track_points;
+            
+            // A. MAP PATH
+            const latlngs = [];
+            points.forEach(p => {
+                const lat = parseFloat(p.lat || p.latitude);
+                const lng = parseFloat(p.lng || p.longitude);
+                if (!isNaN(lat) && !isNaN(lng)) latlngs.push([lat, lng]);
+            });
+
+            if(latlngs.length > 0) {
+                pathLayer.setLatLngs(latlngs);
+                pathLayer.bringToFront(); 
+                map.fitBounds(pathLayer.getBounds(), {padding:[20,20]});
+            }
+
+            // B. SETUP LIGHTWEIGHT MARKERS
+            photoMarkers.forEach(m => map.removeLayer(m));
+            photoMarkers = [];
+
+            if (runData.photos) {
+                runData.photos.forEach(photo => {
+                    // 1. Match Time
+                    let t = 0, minDist = Infinity;
+                    const pLat = parseFloat(photo.lat || photo.latitude);
+                    const pLng = parseFloat(photo.lng || photo.longitude);
+                    
+                    points.forEach(p => {
+                        const trkLat = parseFloat(p.lat || p.latitude);
+                        const trkLng = parseFloat(p.lng || p.longitude);
+                        const d = Math.abs(trkLat - pLat) + Math.abs(trkLng - pLng);
+                        if(d < minDist) { minDist = d; t = p.time; }
+                    });
+
+                    photo.computedTime = t;
+                    const imgSrc = photo.src_chunks ? photo.src_chunks.join('') : photo.src;
+                    const heading = photo.heading || 0;
+
+                    // 2. Create Lightweight Icon
+                    const icon = L.divIcon({
+                        className: '', 
+                        html: `
+                            <div class="simple-marker-wrap">
+                                <div class="simple-arrow" style="transform: rotate(${heading}deg);"></div>
+                                <div class="simple-dot"></div>
+                            </div>
+                        `,
+                        iconSize: [24, 24], 
+                        iconAnchor: [12, 12]
+                    });
+
+                    const m = L.marker([pLat, pLng], {icon:icon, zIndexOffset: 1000}).addTo(map);
+                    
+                    // 3. Flags for Smart Logic
+                    m.photoTimestamp = t;
+                    m._autoOpened = false; // "True" means the SCRIPT opened it and owns it.
+
+                    // 4. Popup Content (Heavy image loads only when opened)
+                    const container = document.createElement('div');
+                    container.innerHTML = `
+                        <div style="margin-bottom:6px; font-weight:bold; color:#ffd700; font-size:0.9em;">
+                             ➤ Heading: ${heading}°
+                        </div>
+                        <img src="${imgSrc}" style="width:100%; border-radius:4px; margin-bottom:8px; display:block;">
+                    `;
+                    const btn = document.createElement('button');
+                    btn.className = "jump-btn";
+                    btn.innerText = "Jump to Here"; 
+                    btn.onclick = () => safeJump(t);
+                    container.appendChild(btn);
+
+                    // 5. Bind Popup (ALLOW MULTIPLE)
+                    m.bindPopup(container, { 
+                        maxWidth: 240, 
+                        autoClose: false,   // Don't close others when this opens
+                        closeOnClick: false // Clicking map doesn't close this
+                    });
+
+                    // 6. User Interaction = User Ownership
+                    m.on('click', () => {
+                        // If user manually clicks, we clear the auto flag.
+                        // This prevents the script from auto-closing it later.
+                        m._autoOpened = false; 
+                    });
+
+                    // Clean up flag on close
+                    m.on('popupclose', () => {
+                        m._autoOpened = false;
+                    });
+
+                    photoMarkers.push(m);
+                });
+            }
+
+            // C. GRAPH & AXES (Standard Setup)
+            maxRunTime = points[points.length-1].time || 100;
+            document.getElementById('timeSlider').max = maxRunTime;
+            updateGraph(points); // Call helper to draw graph
+        }
+        
+        // --- 6. UPDATE VISUALS (SMART PROXIMITY) ---
+        function updateVisuals(t) {
+            if (!runData) return;
+            
+            // 1. Update Time & Scrubber
+            const m = Math.floor(t/60); 
+            const s = Math.floor(t%60);
+            const elTime = document.getElementById('syncTime');
+            if(elTime) elTime.innerText = `${m}:${s.toString().padStart(2,'0')}`;
+            
+            const line = document.getElementById('scrubber-line');
+            if(line) { 
+                const x = 50 + (t / maxRunTime) * (1000 - 100); 
+                line.setAttribute('x1', x); line.setAttribute('x2', x); 
+            }
+
+            // 2. Update Runner Position
+            const points = runData.track_points;
+            let idx = -1;
+            for(let i=0; i < points.length-1; i++) {
+                if (t >= points[i].time && t < points[i+1].time) { idx = i; break; }
+            }
+            if (idx !== -1) {
+                const p1 = points[idx]; const p2 = points[idx+1];
+                const f = (t - p1.time) / (p2.time - p1.time);
+                
+                const lat = (p1.lat||p1.latitude) + ((p2.lat||p2.latitude) - (p1.lat||p1.latitude)) * f;
+                const lng = (p1.lng||p1.longitude) + ((p2.lng||p2.longitude) - (p1.lng||p1.longitude)) * f;
+                runnerMarker.setLatLng([lat, lng]);
+                
+                const dLat = (p2.lat||p2.latitude) - (p1.lat||p1.latitude);
+                const dLng = (p2.lng||p2.longitude) - (p1.lng||p1.longitude);
+                if (Math.abs(dLat) > 0.000001 || Math.abs(dLng) > 0.000001) {
+                    let angle = Math.atan2(dLng, dLat) * (180 / Math.PI);
+                    const arrow = document.getElementById('runner-arrow');
+                    if(arrow) arrow.style.transform = `rotate(${angle}deg)`;
+                }
+
+                const elChkUnits = document.getElementById('chkUnits');
+                const isKmh = elChkUnits ? elChkUnits.checked : true;
+                const vMult = isKmh ? 3.6 : 1.0;
+                
+                const rawVel = (p1.vel + (p2.vel - p1.vel) * f);
+                const rawAcc = (p1.acc||0) + ((p2.acc||0)-(p1.acc||0)) * f;
+                const elValVel = document.getElementById('valVel');
+                const elValAcc = document.getElementById('valAcc');
+                if(elValVel) elValVel.innerText = (rawVel * vMult).toFixed(1);
+                if(elValAcc) elValAcc.innerText = (rawAcc * vMult).toFixed(2);
+            }
+
+            // 3. SMART POPUP LOGIC
+            const elPre = document.getElementById('inpPre');
+            const elPost = document.getElementById('inpPost');
+            const n1 = elPre ? parseFloat(elPre.value) : 2.0; 
+            const n2 = elPost ? parseFloat(elPost.value) : 4.0;
+
+            for(const m of photoMarkers) {
+                const startWindow = m.photoTimestamp - n1;
+                const endWindow = m.photoTimestamp + n2;
+                const inWindow = (t >= startWindow && t <= endWindow);
+                const isOpen = m.isPopupOpen();
+
+                if (inWindow) {
+                    // ENTERING WINDOW
+                    // Rule: Auto-open UNLESS it is already open.
+                    if (!isOpen) {
+                        m.openPopup();
+                        m._autoOpened = true; // Claim ownership
+                    }
+                    // If isOpen is TRUE, we do nothing. 
+                    // (If user opened it, _autoOpened is false, so we don't claim it.
+                    //  If script opened it previously, _autoOpened is true, we keep owning it).
+                } else {
+                    // LEAVING WINDOW
+                    // Rule: Auto-close ONLY IF script opened it.
+                    if (isOpen && m._autoOpened) {
+                        m.closePopup();
+                        m._autoOpened = false; // Release ownership
+                    }
+                    // If isOpen is TRUE but _autoOpened is FALSE, 
+                    // it means the USER opened it (or took control). We leave it open.
+                }
+            }
+        }
+
+        // --- HELPER: GRAPH DRAWING (Separated for cleanliness) ---
+        function updateGraph(points) {
+            const elVel = document.getElementById('chkVel'); const showVel = elVel ? elVel.checked : true;
+            const elAcc = document.getElementById('chkAcc'); const showAcc = elAcc ? elAcc.checked : true;
+            const elUnits = document.getElementById('chkUnits'); const isKmh = elUnits ? elUnits.checked : true;
+            const vMult = isKmh ? 3.6 : 1.0;
+
+            document.getElementById('lblUnits').innerText = isKmh ? "km/h" : "m/s";
+            document.getElementById('unitVel').innerText = isKmh ? "km/h" : "m/s";
+            document.getElementById('unitAcc').innerText = isKmh ? "km/h/s" : "m/s²";
+
+            const svg = document.getElementById('chart-svg');
+            const W = 1000, H = 300, M = {t:20, b:40, l:50, r:50}; 
+            const innerW = W - M.l - M.r, innerH = H - M.t - M.b;
+            svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+            svg.innerHTML = ''; 
+
+            const maxV = isKmh ? 30 : 10; 
+            const rangeA = isKmh ? 10 : 3; 
+
+            const scaleY_Vel = v => M.t + innerH - (Math.max(0, Math.min(v, maxV)) / maxV) * innerH;
+            const scaleY_Acc = a => M.t + innerH/2 - (Math.max(-rangeA, Math.min(a, rangeA)) / (rangeA*2)) * innerH;
+            const scaleX = t => M.l + (t/maxRunTime)*innerW;
+
+            let dVel = "", dAcc = "";
+            points.forEach((p, i) => {
+                const x = scaleX(p.time);
+                const v = (p.vel||0) * vMult;
+                const a = (p.acc||0) * vMult;
+                const cmd = i===0?'M':'L';
+                if(showVel) dVel += `${cmd} ${x.toFixed(1)} ${scaleY_Vel(v).toFixed(1)}`;
+                if(showAcc) dAcc += `${cmd} ${x.toFixed(1)} ${scaleY_Acc(a).toFixed(1)}`;
+            });
+
+            const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+
+            // Grid & Axes
+            if(showVel) {
+                const vStep = isKmh ? 5 : 2;
+                for(let v = 0; v <= maxV; v += vStep) {
+                    const y = scaleY_Vel(v);
+                    const isMajor = (v % (vStep*2) === 0);
+                    g.innerHTML += `<line x1="${M.l}" y1="${y}" x2="${W-M.r}" y2="${y}" class="${isMajor?'grid-line':'grid-line-minor'}" opacity="0.3"/>`;
+                    g.innerHTML += `<text x="${M.l-5}" y="${y+3}" text-anchor="end" fill="#4facfe">${v}</text>`;
+                }
+                g.innerHTML += `<text x="${M.l}" y="${M.t-8}" fill="#4facfe" font-weight="bold">${isKmh?"Speed (km/h)":"Speed (m/s)"}</text>`;
+            }
+            if(showAcc) {
+                const aStep = isKmh ? 2 : 1;
+                for(let a = -rangeA; a <= rangeA; a += aStep) {
+                    if (a === 0) continue;
+                    const y = scaleY_Acc(a);
+                    g.innerHTML += `<line x1="${M.l}" y1="${y}" x2="${W-M.r}" y2="${y}" class="grid-line-minor" opacity="0.2"/>`;
+                    g.innerHTML += `<text x="${W-M.r+5}" y="${y+3}" text-anchor="start" fill="#ff0055">${a > 0 ? '+'+a : a}</text>`;
+                }
+                const yZero = scaleY_Acc(0);
+                g.innerHTML += `<line x1="${M.l}" y1="${yZero}" x2="${W-M.r}" y2="${yZero}" class="grid-line" opacity="0.6"/>`;
+                g.innerHTML += `<text x="${W-M.r+5}" y="${yZero+3}" text-anchor="start" fill="#ff0055">0</text>`;
+                g.innerHTML += `<text x="${W-M.r}" y="${M.t-8}" text-anchor="end" fill="#ff0055" font-weight="bold">${isKmh?"Acc (km/h/s)":"Acc (m/s²)"}</text>`;
+            }
+            const timeStep = 60; 
+            for(let t = 0; t <= maxRunTime; t += timeStep) {
+                const x = scaleX(t);
+                const m = Math.floor(t/60);
+                const s = Math.floor(t%60);
+                g.innerHTML += `<line x1="${x}" y1="${H-M.b}" x2="${x}" y2="${H-M.b+5}" class="axis-line"/>`;
+                g.innerHTML += `<text x="${x}" y="${H-M.b+15}" text-anchor="middle" fill="#888">${m}:${s.toString().padStart(2,'0')}</text>`;
+            }
+            g.innerHTML += `<line x1="${M.l}" y1="${M.t}" x2="${M.l}" y2="${H-M.b}" class="axis-line"/>`;
+            g.innerHTML += `<line x1="${W-M.r}" y1="${M.t}" x2="${W-M.r}" y2="${H-M.b}" class="axis-line"/>`;
+
+            // Paths
+            if(showVel) { 
+                const pV = document.createElementNS("http://www.w3.org/2000/svg", "path"); 
+                pV.setAttribute("d", dVel); pV.setAttribute("class", "line-vel"); g.appendChild(pV); 
+            }
+            if(showAcc) { 
+                const pA = document.createElementNS("http://www.w3.org/2000/svg", "path"); 
+                pA.setAttribute("d", dAcc); pA.setAttribute("class", "line-acc"); g.appendChild(pA); 
+            }
+
+            // Dots
+            photoMarkers.forEach(m => {
+                const cx = scaleX(m.photoTimestamp);
+                const cy = showVel ? scaleY_Vel(0) : (H-M.b-5);
+                const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                dot.setAttribute("cx", cx); dot.setAttribute("cy", cy);
+                dot.setAttribute("r", 4); dot.setAttribute("class", "graph-photo-dot");
+                dot.onclick = (e) => { e.stopPropagation(); safeJump(m.photoTimestamp); };
+                g.appendChild(dot);
+            });
+
+            const scrub = document.createElementNS("http://www.w3.org/2000/svg", "line");
+            scrub.id = "scrubber-line"; scrub.setAttribute("class", "cursor-line");
+            scrub.setAttribute("y1", M.t); scrub.setAttribute("y2", H-M.b);
+            g.appendChild(scrub);
+            svg.appendChild(g);
+
+            document.getElementById('chart-overlay').onclick = (e) => {
+                const rect = e.target.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const t = ((x/rect.width * W - M.l)/innerW) * maxRunTime;
+                safeJump(Math.max(0, Math.min(t, maxRunTime)));
+            };
+        }
+
+        // --- LISTENERS ---
+        const slider = document.getElementById('timeSlider');
+        slider.addEventListener('mousedown', () => isDragging = true);
+        slider.addEventListener('mouseup', () => { isDragging = false; safeJump(parseFloat(slider.value)); });
+        slider.addEventListener('input', () => updateVisuals(parseFloat(slider.value)));
+
+        ['chkUnits', 'chkVel', 'chkAcc', 'inpDuration', 'chkScale', 'inpPre', 'inpPost'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.addEventListener('change', () => {
+                    if (runData) { 
+                        if (id.startsWith('chk')) initVisualizer(); 
+                        updateVisuals(parseFloat(slider.value)); 
+                    }
+                });
+            } else {
+                console.warn(`Element with ID '${id}' not found. Check your HTML.`);
+            }
+        });
+        document.getElementById('fileInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                try {
+                    const json = JSON.parse(event.target.result);
+                    const points = json.track_points || json.points;
+                    if (!Array.isArray(points)) throw new Error("No points");
+                    runData = { track_points: points, photos: json.photos || [] };
+                    initVisualizer();
+                } catch(err) { alert("Error: " + err.message); }
+            };
+            reader.readAsText(file);
+        });
+
+        setInterval(() => {
+            if (window.opener && !window.opener.closed) window.opener.postMessage({ type: 'viewer_hello' }, '*');
+        }, 3000);
+    </script>
+</body>
+</html>

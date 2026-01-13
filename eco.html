@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Run Tracker Pro</title>
+    
+    <link rel="manifest" href="manifest.json">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="style.css"> 
+</head>
+<body>
+
+    <div id="map"></div>
+    
+    <div id="controls">
+        <div class="stat-box">
+            <div class="stat"><div class="label">Time</div><div class="value" id="time">00:00</div></div>
+            <div class="stat"><div class="label">Dist (m)</div><div class="value" id="dist">0</div></div>
+            <div class="stat"><div class="label">Vel (m/s)</div><div class="value" id="vel">0.0</div></div>
+        </div>
+
+        <div class="mode-switch">
+            <label>
+                <input type="checkbox" id="compass-toggle" onchange="toggleCompassMode()">
+                <span class="mode-label">Mode: Walking (Eco)</span>
+            </label>
+        </div>
+
+        <button id="btn-start" class="btn-green" onclick="toggleTracking(true)">Start Session</button>
+        <button id="btn-stop" class="btn-red" onclick="toggleTracking(false)" style="display:none;">Stop Tracking</button>
+
+        <input type="file" id="camera-input" accept="image/*" capture="environment" onchange="handlePhoto(this)">
+        <button id="btn-photo" class="btn-blue" onclick="document.getElementById('camera-input').click()">Take Photo</button>
+        
+        <div class="button-grid" id="save-options" style="display:none;">
+            <button class="btn-dark" onclick="downloadRun(true)">Save Full</button>
+            <button class="btn-grey" onclick="downloadRun(false)">Save Track</button>
+        </div>
+
+        <button id="btn-reset" class="btn-danger" onclick="saveAndReset()" style="display:none;">End & Reset</button>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <script src="tracker.js"></script>
+</body>
+</html>

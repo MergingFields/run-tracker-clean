@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Run Tracker - Video Mode</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="style.css"> 
+    
+    <style>
+        /* --- POCKET OVERLAY --- */
+        #pocket-overlay {
+            display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background-color: #000; z-index: 9999; flex-direction: column;
+            align-items: center; justify-content: center; color: #444;
+        }
+        #btn-unlock {
+            width: 150px; height: 150px; border-radius: 50%; background: #111;
+            border: 2px solid #333; color: #ddd; font-size: 18px; font-weight: bold;
+        }
+
+        /* --- VIDEO UI --- */
+        #cam-container {
+            position: fixed; bottom: 240px; left: 50%; transform: translateX(-50%);
+            width: 95%; max-width: 400px; height: 250px; background: #000;
+            border-radius: 12px; overflow: hidden; border: 2px solid #fff;
+            display: none; z-index: 1000;
+        }
+        #live-video { width: 100%; height: 100%; object-fit: cover; }
+        
+        #rec-indicator {
+            position: absolute; top: 10px; right: 10px;
+            width: 15px; height: 15px; background: red; border-radius: 50%;
+            display: none; animation: blink 1s infinite;
+        }
+        @keyframes blink { 50% { opacity: 0; } }
+
+        .cam-settings { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-bottom: 10px; }
+        .cam-actions { display: grid; grid-template-columns: 1fr; gap: 10px; margin-bottom: 10px; }
+        
+        .btn-rec { background: #cc0000; color: white; }
+        .btn-stop-rec { background: #333; color: white; display: none; }
+        
+        /* Video Marker Style on Map */
+        .video-marker {
+            background-color: #cc0000;
+            border: 2px solid white;
+            border-radius: 50%;
+            text-align: center;
+            color: white;
+            font-weight: bold;
+            line-height: 20px;
+            font-size: 10px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="pocket-overlay">
+        <button id="btn-unlock" onclick="togglePocketMode(false)">TAP TO UNLOCK</button>
+    </div>
+
+    <div id="map"></div>
+    
+    <div id="cam-container">
+        <video id="live-video" autoplay playsinline muted></video>
+        <div id="rec-indicator"></div>
+        <button onclick="startCamera()" style="position:absolute; bottom:10px; left:10px; font-size:10px; background:rgba(0,0,0,0.5); color:white; border:1px solid white;">Wake Cam</button>
+    </div>
+
+    <div id="controls">
+        <div class="stat-box">
+            <div class="stat"><div class="label">Time</div><div class="value" id="time">00:00</div></div>
+            <div class="stat"><div class="label">Dist (m)</div><div class="value" id="dist">0</div></div>
+            <div class="stat"><div class="label">Vel (m/s)</div><div class="value" id="vel">0.0</div></div>
+        </div>
+
+        <div class="mode-switch">
+            <label>
+                <input type="checkbox" id="compass-toggle" onchange="toggleCompassMode()">
+                <span class="mode-label">Mode: Walking (Eco)</span>
+            </label>
+        </div>
+
+        <button id="btn-start" class="btn-green" onclick="toggleTracking(true); startCamera();">Start Run & Cam</button>
+        <button id="btn-stop" class="btn-red" onclick="toggleTracking(false); stopCamera();" style="display:none;">Stop Tracking</button>
+
+        <div class="cam-settings">
+            <button id="btn-lock" class="btn-dark" onclick="togglePocketMode(true)">🔒 Lock Screen</button>
+            <button id="btn-switch" class="btn-grey" onclick="switchCamera()">Switch Cam ↻</button>
+        </div>
+
+        <div class="cam-actions">
+            <button id="btn-record" class="btn-rec" onclick="toggleRecording(true)">🔴 RECORD VIDEO</button>
+            <button id="btn-stop-rec" class="btn-stop-rec" onclick="toggleRecording(false)">⏹ STOP RECORDING</button>
+        </div>
+        
+        <div class="button-grid" id="save-options" style="display:none;">
+            <button class="btn-dark" onclick="downloadRun(true)">Save GPS Track</button>
+        </div>
+
+        <button id="btn-reset" class="btn-danger" onclick="saveAndReset()" style="display:none;">End & Reset</button>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="tracker.js?v=8"></script>
+
+    <script>
+        // --- OVERRIDE TRACKER.JS updatePosition to add ACCELERATION & HEADING ---
+        // This replaces the function loaded from tracker.js
+        const originalUpdatePosition = updatePosition;
+        
+        updatePosition = function(position) {
+            const lat = position.coords.latitude;
+            const lng = position.coords.longitude;
+            const timestamp = position.timestamp;
+            
+            // Calculate Velocity
+            let v_current = position.coords.speed || 0;
+            
+            // Calculate Acceleration: (dv / dt)
+            let acc = 0;
+            if (lastPos && lastPos.timestamp) {
+                const dt = (timestamp - lastPos.timestamp) / 1000; // seconds
+                if (dt > 0) {
+                    acc = (v_current - lastPos.speed) / dt;
+                }
+            }
+
+            // Get Heading (Compass or GPS Course)
+            let h = currentHeading || position.coords.heading || 0;
+
+            // Map Updates
+            if (!lastPos) map.setView([lat, lng], 18);
+            if (lastPos) {
+                const distStep = map.distance([lastPos.latitude, lastPos.longitude], [lat, lng]);
+                totalDistance += distStep;
+            }
+
+            // UI
+            document.getElementById('vel').innerText = v_current.toFixed(1);
+            document.getElementById('dist').innerText = Math.round(totalDistance);
+            
+            // Draw Line
+            pathLayer.addLatLng([lat, lng]);
+            
+            // Save Data with EXTRA FIELDS
+            const point = {
+                time: (Date.now() - startTime) / 1000,
+                absTime: timestamp,
+                lat: lat,
+                lng: lng,
+                vel: v_current,
+                acc: acc,        // NEW: Acceleration
+                heading: h       // NEW: Heading
+            };
+
+            trackData.push(point);
+
+            lastPos = { 
+                latitude: lat, 
+                longitude: lng, 
+                speed: v_current,
+                timestamp: timestamp 
+            };
+            
+            saveToMemory();
+        };
+
+        // --- CAMERA LOGIC ---
+        const video = document.getElementById('live-video');
+        const camContainer = document.getElementById('cam-container');
+        const overlay = document.getElementById('pocket-overlay');
+        const recInd = document.getElementById('rec-indicator');
+        
+        let stream = null;
+        let mediaRecorder = null;
+        let recordedChunks = [];
+        let currentFacingMode = "environment"; 
+
+        function togglePocketMode(enable) {
+            overlay.style.display = enable ? "flex" : "none";
+        }
+
+        async function startCamera() {
+            // Only start if not already active to prevent flickering
+            if (stream && stream.active) return;
+            
+            if (stream) stopCamera(); 
+
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: currentFacingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
+                    audio: true 
+                });
+                video.srcObject = stream;
+                camContainer.style.display = 'block'; 
+                video.play(); // Ensure it plays after interruption
+            } catch (err) {
+                console.warn("Camera Error:", err);
+            }
+        }
+
+        function stopCamera() {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+                camContainer.style.display = 'none';
+            }
+        }
+
+        // AUTO-WAKE: Restart camera if user returns to tab (e.g. after upload)
+        document.addEventListener("visibilitychange", () => {
+            if (document.visibilityState === "visible" && tracking) {
+                console.log("Tab visible again, waking camera...");
+                startCamera();
+            }
+        });
+
+        async function switchCamera() {
+            currentFacingMode = (currentFacingMode === "environment") ? "user" : "environment";
+            // Force stop and restart
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+            }
+            await startCamera(); 
+        }
+
+        // --- MARKERS & FILENAMES ---
+        async function addVideoMarker(label) {
+            if (!lastPos) return; 
+            const heading = await getHeadingNow();
+            const lat = lastPos.latitude;
+            const lng = lastPos.longitude;
+            
+            const vidIcon = L.divIcon({
+                html: label,
+                className: 'video-marker',
+                iconSize: [20, 20],
+                iconAnchor: [10, 10]
+            });
+
+            L.marker([lat, lng], {icon: vidIcon})
+                .addTo(map)
+                .bindPopup(`<b>${label}</b><br>Time: ${new Date().toLocaleTimeString()}<br>Heading: ${Math.round(heading)}°`);
+        }
+
+        function getTimestampFilename() {
+            const now = new Date();
+            return "Video_" + now.toISOString().replace(/[:.]/g, '-').slice(0, 19) + ".webm";
+        }
+
+        // --- RECORDING ---
+        function toggleRecording(isRecording) {
+            const btnRec = document.getElementById('btn-record');
+            const btnStop = document.getElementById('btn-stop-rec');
+
+            if (isRecording) {
+                if (!stream) { startCamera().then(() => toggleRecording(true)); return; }
+                
+                recordedChunks = [];
+                const options = { mimeType: 'video/webm;codecs=vp9' };
+                if (!MediaRecorder.isTypeSupported(options.mimeType)) options.mimeType = 'video/webm'; 
+                
+                try {
+                    mediaRecorder = new MediaRecorder(stream, options);
+                } catch (e) {
+                    alert("MediaRecorder error: " + e.message);
+                    return;
+                }
+
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) recordedChunks.push(event.data);
+                };
+
+                mediaRecorder.start();
+                addVideoMarker("REC"); 
+                
+                btnRec.style.display = 'none';
+                btnStop.style.display = 'block';
+                recInd.style.display = 'block';
+                camContainer.style.border = "3px solid red";
+
+            } else {
+                if (mediaRecorder) mediaRecorder.stop();
+                addVideoMarker("END");
+
+                btnRec.style.display = 'block';
+                btnStop.style.display = 'none';
+                recInd.style.display = 'none';
+                camContainer.style.border = "2px solid #fff";
+                
+                // Wait briefly for final data, then download
+                setTimeout(downloadVideo, 500); 
+            }
+        }
+
+        function downloadVideo() {
+            if (recordedChunks.length === 0) return;
+            const blob = new Blob(recordedChunks, { type: "video/webm" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = getTimestampFilename(); 
+            document.body.appendChild(a);
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+    </script>
+</body>
+</html>
