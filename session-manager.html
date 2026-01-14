@@ -3,39 +3,39 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Session Manager V13 (Chunker)</title>
+    <title>Session Manager V14</title>
     <style>
         body { background: #111; color: #eee; font-family: system-ui; padding: 20px; }
-        h1 { border-bottom: 1px solid #333; padding-bottom: 10px; display: flex; justify-content: space-between; }
-        .version-tag { font-size: 12px; background: #333; padding: 5px 10px; border-radius: 10px; color: #00e676; }
+        h1 { border-bottom: 1px solid #333; padding-bottom: 10px; }
         .session-card { background: #222; border: 1px solid #333; border-radius: 8px; padding: 15px; margin-bottom: 15px; }
         .stats { display: flex; gap: 15px; font-size: 12px; font-family: monospace; color: #4fceff; margin-bottom: 15px; }
         .btn-group { display: flex; flex-direction: column; gap: 10px; }
         button { padding: 12px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 14px; text-align: left; }
         .btn-json { background: #4fceff; color: #000; text-align: center; }
         .btn-vid-row { display: flex; gap: 5px; overflow-x: auto; padding-bottom: 5px; }
-        .btn-vid { background: #ff4444; color: #fff; flex: 1; min-width: 80px; text-align: center; font-size: 12px; }
+        .btn-vid { background: #ff4444; color: #fff; flex: 1; min-width: 120px; text-align: center; font-size: 11px; white-space: nowrap; }
         .btn-del { background: #333; color: #aaa; margin-top: 10px; width: 100%; text-align: center; }
         .back-link { display: inline-block; margin-bottom: 20px; color: #aaa; text-decoration: none; }
     </style>
 </head>
 <body>
     <a href="index.html" class="back-link">← Back to Menu</a>
-    <h1>Saved Sessions <span class="version-tag">V13 Chunker</span></h1>
+    <h1>Saved Sessions <span style="font-size:12px; color:#00e676;">V14</span></h1>
     <div id="list">Loading...</div>
 
     <script>
+        const DB_VERSION = 106;
         const list = document.getElementById('list');
-        const request = indexedDB.open("RunTrackerDB", 105);
+        const request = indexedDB.open("RunTrackerDB", DB_VERSION);
         
         request.onsuccess = function(e) {
             const db = e.target.result;
-            if(!db.objectStoreNames.contains("sessions")) { list.innerHTML = "No sessions found."; return; }
             loadSessions(db);
         };
-        request.onerror = e => list.innerHTML = "DB Error: " + e.target.error;
+        request.onerror = e => list.innerHTML = "DB Error. Refresh.";
 
         function loadSessions(db) {
+            if(!db.objectStoreNames.contains("sessions")) { list.innerHTML = "No sessions found."; return; }
             const tx = db.transaction("sessions", "readonly");
             const req = tx.objectStore("sessions").getAll();
 
@@ -49,11 +49,14 @@
                     const date = new Date(run.date).toLocaleString();
                     const vids = run.videoData || [];
                     
+                    // Generate buttons for EACH video using the SMART NAME
                     let vidButtons = '';
                     if(vids.length > 0) {
                         vidButtons = `<div class="btn-vid-row">`;
-                        vids.forEach((v, i) => {
-                            vidButtons += `<button class="btn-vid" onclick="downloadSingleVideo(${run.id}, ${i})">🎥 Clip ${i+1}</button>`;
+                        vids.forEach((v) => {
+                            // Display shorter name on button, but download full name
+                            const shortName = v.filename.split('_Clip_')[1] || v.filename; 
+                            vidButtons += `<button class="btn-vid" onclick="downloadVideo('${v.filename}')">🎥 ${shortName}</button>`;
                         });
                         vidButtons += `</div>`;
                     } else {
@@ -65,12 +68,12 @@
                     div.innerHTML = `
                         <div style="color:#aaa; font-size:14px; margin-bottom:10px;">${date}</div>
                         <div class="stats">
-                            <span>⏱ ${Math.floor(run.duration/60)}:${(run.duration%60).toString().padStart(2,'0')}</span>
+                            <span>⏱ ${Math.floor(run.duration/60)}:${Math.floor(run.duration%60)}</span>
                             <span>📸 ${run.photos.length}</span>
                             <span>💾 ${vids.length} Clips</span>
                         </div>
                         <div class="btn-group">
-                            <button class="btn-json" onclick="downloadChunkedJSON(${run.id})">📄 Download JSON (Chunked)</button>
+                            <button class="btn-json" onclick="downloadChunkedJSON(${run.id})">📄 Download JSON</button>
                             ${vidButtons}
                             <button class="btn-del" onclick="deleteRun(${run.id})">🗑 Delete Session</button>
                         </div>
@@ -80,75 +83,87 @@
             };
         }
 
-        // --- THE CHUNKER LOGIC ---
+        // --- DOWNLOADERS ---
         function chunkString(str, length) {
             return str.match(new RegExp('.{1,' + length + '}', 'g'));
         }
 
         function downloadChunkedJSON(id) {
-            useDB(store => {
-                store.get(id).onsuccess = e => {
-                    const rawData = e.target.result;
+            const req = indexedDB.open("RunTrackerDB", DB_VERSION);
+            req.onsuccess = e => {
+                const db = e.target.result;
+                db.transaction("sessions", "readonly").objectStore("sessions").get(id).onsuccess = ev => {
+                    const rawData = ev.target.result;
                     
-                    // 1. Process Photos: Convert src -> src_chunks
+                    // Process Photos (Chunking)
                     const processedPhotos = (rawData.photos || []).map(p => {
-                        const newPhoto = { ...p }; // Copy
-                        if (newPhoto.src && newPhoto.src.length > 100) {
-                            // Split Base64 into 50KB chunks
-                            newPhoto.src_chunks = chunkString(newPhoto.src, 50000); 
-                            delete newPhoto.src; // Remove the massive string
+                        const newPhoto = { ...p };
+                        if (newPhoto.src && newPhoto.src.length > 50000) {
+                            newPhoto.src_chunks = chunkString(newPhoto.src, 50000);
+                            delete newPhoto.src;
                         }
                         return newPhoto;
                     });
 
-                    // 2. Clean Video Data (Remove Blobs)
-                    const cleanVideos = (rawData.videoData || []).map(v => ({ 
-                        filename: v.filename, 
-                        startTime: v.startTime, 
-                        endTime: v.endTime 
-                    }));
-
-                    // 3. Assemble Final JSON
                     const exportData = { 
                         ...rawData, 
                         photos: processedPhotos, 
-                        videoData: cleanVideos 
+                        // Video data already has filenames in it
                     };
 
-                    // 4. Download
                     const url = URL.createObjectURL(new Blob([JSON.stringify(exportData,null,2)], {type:'application/json'}));
-                    const a = document.createElement('a'); a.href=url; 
-                    const safeDate = rawData.date.replace(/:/g, '-').split('.')[0];
-                    a.download = `Run_${safeDate}_Chunked.json`; a.click();
+                    const a = document.createElement('a'); 
+                    a.href=url; 
+                    // Name JSON: Run_2026-01-14_10-30.json
+                    const safeDate = rawData.date.replace(/:/g, '-').split('.')[0].replace('T', '_');
+                    a.download = `Run_${safeDate}.json`; 
+                    a.click();
                 };
-            });
+            };
         }
 
-        function downloadSingleVideo(id, vidIndex) {
-            useDB(store => {
-                store.get(id).onsuccess = e => {
-                    const vids = e.target.result.videoData || [];
-                    if(!vids[vidIndex]) return alert("Video not found.");
-                    const v = vids[vidIndex];
-                    const url = URL.createObjectURL(v.blob);
-                    const a = document.createElement('a'); a.href = url; a.download = v.filename; a.click();
+        function downloadVideo(filename) {
+            const req = indexedDB.open("RunTrackerDB", DB_VERSION);
+            req.onsuccess = e => {
+                const db = e.target.result;
+                // Retrieve video Blob by FILENAME (Key)
+                const tx = db.transaction("videos", "readonly");
+                const store = tx.objectStore("videos");
+                
+                store.get(filename).onsuccess = ev => {
+                    const result = ev.target.result;
+                    if (!result) return alert("Video file missing from DB!");
+                    
+                    const url = URL.createObjectURL(result.blob);
+                    const a = document.createElement('a'); 
+                    a.href = url; 
+                    a.download = filename; // Uses the unique Smart Name
+                    a.click();
                 };
-            });
+            };
         }
 
         function deleteRun(id) {
             if(!confirm("Delete?")) return;
-            const req = indexedDB.open("RunTrackerDB", 105);
+            const req = indexedDB.open("RunTrackerDB", DB_VERSION);
             req.onsuccess = e => {
-                const tx = e.target.result.transaction("sessions", "readwrite");
-                tx.objectStore("sessions").delete(id);
+                const db = e.target.result;
+                const tx = db.transaction(["sessions", "videos"], "readwrite");
+                
+                // 1. Get the session to find which videos to delete
+                tx.objectStore("sessions").get(id).onsuccess = ev => {
+                    const run = ev.target.result;
+                    if(run.videoData) {
+                        run.videoData.forEach(v => {
+                            tx.objectStore("videos").delete(v.filename);
+                        });
+                    }
+                    // 2. Delete the session itself
+                    tx.objectStore("sessions").delete(id);
+                };
+                
                 tx.oncomplete = () => window.location.reload();
             };
-        }
-
-        function useDB(cb) {
-            const req = indexedDB.open("RunTrackerDB", 105);
-            req.onsuccess = e => cb(e.target.result.transaction("sessions", "readonly").objectStore("sessions"));
         }
     </script>
 </body>
