@@ -3,20 +3,30 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Run Tracker V14 (Smart Names)</title>
+    <title>Run Tracker V15 (Compass+Stealth)</title>
     <style>
         body { margin: 0; background: #000; color: white; font-family: sans-serif; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
         #video-container { position: relative; flex-grow: 1; background: #111; display: flex; align-items: center; justify-content: center; overflow: hidden; }
         video { width: 100%; height: 100%; object-fit: cover; }
+        
+        /* DATA OVERLAY */
         #overlay-data { position: absolute; top: 10px; left: 10px; z-index: 10; font-family: monospace; font-size: 14px; text-shadow: 1px 1px 2px black; pointer-events: none; }
-        #controls { height: 120px; background: #111; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; padding: 10px; border-top: 1px solid #333; z-index: 20; }
+        
+        /* CONTROLS */
+        #controls { height: 120px; background: #111; display: grid; grid-template-columns: 1fr 1fr 1fr 0.5fr; gap: 10px; padding: 10px; border-top: 1px solid #333; z-index: 20; }
         button { border: none; border-radius: 12px; font-weight: bold; font-size: 16px; color: white; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; }
         .btn-rec { background: #ff4444; }
         .btn-rec.recording { background: white; color: red; animation: pulse 1s infinite; }
         .btn-photo { background: #444; }
         .btn-finish { background: #00e676; color: #003300; }
+        .btn-stealth { background: #222; color: #555; font-size: 20px; }
+        
         @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
         #status-toast { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.8); padding: 15px 25px; border-radius: 30px; font-size: 18px; pointer-events: none; opacity: 0; transition: opacity 0.3s; z-index: 50; border: 1px solid #555; text-align: center; }
+
+        /* STEALTH CURTAIN */
+        #curtain { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: black; z-index: 9999; display: none; }
+        #curtain-msg { position: absolute; bottom: 50px; width: 100%; text-align: center; color: #333; font-size: 12px; }
     </style>
 </head>
 <body>
@@ -24,7 +34,8 @@
         <video id="preview" autoplay playsinline muted></video>
         <div id="overlay-data">
             <div>GPS: <span id="gps-status">Waiting...</span></div>
-            <div>Speed: <span id="speed">0.0</span> km/h</div>
+            <div>Hdg: <span id="heading-display">--</span>°</div>
+            <div>Spd: <span id="speed">0.0</span> km/h</div>
             <div>Rec: <span id="rec-timer">00:00</span></div>
             <div>Clips: <span id="clip-count">0</span></div>
         </div>
@@ -32,55 +43,86 @@
     </div>
 
     <div id="controls">
-        <button class="btn-photo" onclick="takePhoto()">📸 SNAP</button>
+        <button class="btn-photo" onclick="takePhoto()">📸</button>
         <button class="btn-rec" id="btn-rec" onclick="toggleRecording()">🔴 REC</button>
-        <button class="btn-finish" onclick="finishSession()">🏁 FINISH</button>
+        <button class="btn-finish" onclick="finishSession()">🏁</button>
+        <button class="btn-stealth" onclick="toggleStealth()">👁️</button>
+    </div>
+
+    <div id="curtain" onclick="toggleStealth()">
+        <div id="curtain-msg">Recording in background... Tap to wake.</div>
     </div>
 
     <script>
-        // --- CONFIGURATION ---
-        const DB_VERSION = 106; // Incrementing for V14
+        const DB_VERSION = 106;
         const DB_NAME = "RunTrackerDB";
 
-        // --- STATE ---
         let mediaStream, mediaRecorder;
         let chunks = [];
         let isRecording = false;
         let startTime = 0;
         let recordTimerInt;
+        let sessionID = Date.now();
+        let sessionDateStr = "";
+        let clipIndex = 1;
         
-        let sessionID = Date.now(); // Unique ID for this entire run
-        let sessionDateStr = "";    // Will be set on init
-        let clipIndex = 1;          // Counter for clips in this session
-
         let trackPoints = [];
         let photos = [];
-        let videoMeta = []; // Stores { filename, startTime, endTime, blob } (blob is temp)
+        let videoMeta = [];
+        
+        // --- COMPASS VARIABLES ---
+        let magneticHeading = 0; // The fallback heading
 
-        // --- INITIALIZATION ---
         async function init() {
-            // 1. Generate Session Name String: "Run_2026-01-14_10-30"
+            // 1. Session Name
             const now = new Date();
-            const datePart = now.toISOString().split('T')[0];
-            const timePart = now.toTimeString().split(' ')[0].replace(/:/g, '-');
-            sessionDateStr = `Run_${datePart}_${timePart}`;
+            sessionDateStr = `Run_${now.toISOString().split('T')[0]}_${now.toTimeString().split(' ')[0].replace(/:/g, '-')}`;
+
+            // 2. Continuous Compass Listener
+            if (window.DeviceOrientationEvent) {
+                window.addEventListener('deviceorientation', (event) => {
+                    if (event.webkitCompassHeading) {
+                        // iOS
+                        magneticHeading = event.webkitCompassHeading;
+                    } else if (event.alpha) {
+                        // Android (Approximate, alpha is technically z-axis rotation)
+                        magneticHeading = 360 - event.alpha;
+                    }
+                }, true);
+            }
 
             try {
-                // 2. Camera
+                // 3. Camera
                 mediaStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: true });
                 document.getElementById('preview').srcObject = mediaStream;
 
-                // 3. GPS
+                // 4. GPS
                 navigator.geolocation.watchPosition(
                     pos => {
                         const { latitude, longitude, speed, altitude, heading } = pos.coords;
+                        
+                        // --- HEADING LOGIC V15 ---
+                        // If GPS heading is valid (>0), use it. If not, use Magnetic.
+                        let finalHeading = heading;
+                        let headingSource = "GPS";
+
+                        if (!heading || isNaN(heading) || (heading === 0 && speed < 1)) {
+                            finalHeading = magneticHeading;
+                            headingSource = "Mag";
+                        }
+
+                        // Update UI
                         document.getElementById('gps-status').innerText = `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
                         document.getElementById('speed').innerText = ((speed || 0) * 3.6).toFixed(1);
+                        document.getElementById('heading-display').innerText = `${Math.round(finalHeading || 0)}`;
 
                         const point = {
                             time: (Date.now() - sessionID) / 1000,
                             lat: latitude, lng: longitude,
-                            speed, alt: altitude, heading
+                            speed: speed, 
+                            alt: altitude, 
+                            heading: finalHeading, // Store the fused heading
+                            headingSrc: headingSource // Store which one we used (for debugging)
                         };
                         trackPoints.push(point);
                     },
@@ -88,50 +130,37 @@
                     { enableHighAccuracy: true }
                 );
 
-            } catch (e) { alert("Camera/GPS Error: " + e.message); }
+            } catch (e) { alert("Error: " + e.message); }
         }
         init();
 
-        // --- RECORDING ---
+        // --- STEALTH LOGIC ---
+        function toggleStealth() {
+            const c = document.getElementById('curtain');
+            c.style.display = (c.style.display === 'block') ? 'none' : 'block';
+        }
+
+        // --- RECORDING (Standard V14 Logic) ---
         function toggleRecording() {
-            if (!isRecording) {
-                startRecording();
-            } else {
-                stopRecording();
-            }
+            if (!isRecording) startRecording();
+            else stopRecording();
         }
 
         function startRecording() {
             chunks = [];
-            try {
-                mediaRecorder = new MediaRecorder(mediaStream, { mimeType: 'video/mp4; codecs=avc1' });
-            } catch (e) {
-                mediaRecorder = new MediaRecorder(mediaStream); // Fallback
-            }
+            try { mediaRecorder = new MediaRecorder(mediaStream, { mimeType: 'video/mp4; codecs=avc1' }); } 
+            catch (e) { mediaRecorder = new MediaRecorder(mediaStream); }
 
             mediaRecorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
-            
             mediaRecorder.onstop = async () => {
                 const blob = new Blob(chunks, { type: 'video/mp4' });
-                
-                // --- SMART NAMING LOGIC ---
-                // Format: Run_2026-01-14_10-30_Clip_01.mp4
                 const clipName = `${sessionDateStr}_Clip_${String(clipIndex).padStart(2, '0')}.mp4`;
-                
-                // Save to IndexedDB immediately to clear RAM
                 await saveVideoChunkToDB(blob, clipName);
-                
-                videoMeta.push({
-                    filename: clipName,
-                    startTime: (startTime - sessionID) / 1000,
-                    endTime: (Date.now() - sessionID) / 1000
-                });
-
-                showToast(`✅ Saved: ${clipName}`);
+                videoMeta.push({ filename: clipName, startTime: (startTime - sessionID)/1000, endTime: (Date.now() - sessionID)/1000 });
+                showToast(`✅ Saved: Clip ${clipIndex}`);
                 document.getElementById('clip-count').innerText = videoMeta.length;
-                clipIndex++; // Increment for next clip
+                clipIndex++;
             };
-
             mediaRecorder.start();
             isRecording = true;
             startTime = Date.now();
@@ -144,96 +173,70 @@
             updateUI(false);
         }
 
-        // --- PHOTOS ---
         function takePhoto() {
             const track = mediaStream.getVideoTracks()[0];
             const imageCapture = new ImageCapture(track);
-            
             imageCapture.takePhoto().then(blob => {
                 const reader = new FileReader();
                 reader.onloadend = () => {
-                    // Save photo with timestamp
+                    const lastPt = trackPoints[trackPoints.length-1] || {lat:0, lng:0, heading: magneticHeading};
                     photos.push({
                         time: (Date.now() - sessionID) / 1000,
-                        lat: trackPoints.length ? trackPoints[trackPoints.length-1].lat : 0,
-                        lng: trackPoints.length ? trackPoints[trackPoints.length-1].lng : 0,
-                        src: reader.result // Base64
+                        lat: lastPt.lat,
+                        lng: lastPt.lng,
+                        heading: lastPt.heading || magneticHeading, // Photo heading
+                        src: reader.result
                     });
-                    showToast("📸 Photo Captured");
+                    showToast("📸 Photo");
                 };
                 reader.readAsDataURL(blob);
-            }).catch(err => alert("Photo Error"));
+            });
         }
 
-        // --- DATABASE (The Engine) ---
         function saveVideoChunkToDB(blob, filename) {
             return new Promise((resolve, reject) => {
-                const request = indexedDB.open(DB_NAME, DB_VERSION);
-                request.onupgradeneeded = e => {
+                const req = indexedDB.open(DB_NAME, DB_VERSION);
+                req.onupgradeneeded = e => {
                     const db = e.target.result;
                     if (!db.objectStoreNames.contains("sessions")) db.createObjectStore("sessions", { keyPath: "id" });
                     if (!db.objectStoreNames.contains("videos")) db.createObjectStore("videos", { keyPath: "filename" });
                 };
-                request.onsuccess = e => {
-                    const db = e.target.result;
-                    const tx = db.transaction("videos", "readwrite");
-                    // Save video blob keyed by the UNIQUE filename
+                req.onsuccess = e => {
+                    const tx = e.target.result.transaction("videos", "readwrite");
                     tx.objectStore("videos").put({ filename: filename, blob: blob });
                     tx.oncomplete = () => resolve();
-                    tx.onerror = () => reject();
                 };
             });
         }
 
-        async function finishSession() {
+        function finishSession() {
             if (isRecording) stopRecording();
-            if (!confirm("Finish and Save Run?")) return;
-
-            const finalData = {
-                id: sessionID,
-                date: new Date().toISOString(),
-                duration: (Date.now() - sessionID) / 1000,
-                track_points: trackPoints,
-                photos: photos,
-                videoData: videoMeta // Contains filenames, times (but not blobs, to keep JSON light)
-            };
-
-            const request = indexedDB.open(DB_NAME, DB_VERSION);
-            request.onsuccess = e => {
-                const db = e.target.result;
-                const tx = db.transaction("sessions", "readwrite");
+            if (!confirm("Finish Run?")) return;
+            const finalData = { id: sessionID, date: new Date().toISOString(), duration: (Date.now() - sessionID)/1000, track_points: trackPoints, photos: photos, videoData: videoMeta };
+            const req = indexedDB.open(DB_NAME, DB_VERSION);
+            req.onsuccess = e => {
+                const tx = e.target.result.transaction("sessions", "readwrite");
                 tx.objectStore("sessions").put(finalData);
-                tx.oncomplete = () => {
-                    window.location.href = 'session-manager.html';
-                };
+                tx.oncomplete = () => window.location.href = 'session-manager.html';
             };
         }
 
-        // --- UI UTILS ---
         function updateUI(recording) {
             const btn = document.getElementById('btn-rec');
             if (recording) {
                 btn.classList.add('recording');
-                btn.innerText = "⏹ STOP";
+                btn.innerText = "⏹";
                 let s = 0;
-                recordTimerInt = setInterval(() => {
-                    s++;
-                    const m = Math.floor(s / 60).toString().padStart(2, '0');
-                    const sec = (s % 60).toString().padStart(2, '0');
-                    document.getElementById('rec-timer').innerText = `${m}:${sec}`;
-                }, 1000);
+                recordTimerInt = setInterval(() => { s++; document.getElementById('rec-timer').innerText = `${Math.floor(s/60).toString().padStart(2,'0')}:${(s%60).toString().padStart(2,'0')}`; }, 1000);
             } else {
                 btn.classList.remove('recording');
                 btn.innerText = "🔴 REC";
                 clearInterval(recordTimerInt);
-                document.getElementById('rec-timer').innerText = "00:00";
             }
         }
 
         function showToast(msg) {
-            const t = document.getElementById('status-toast');
-            t.innerText = msg;
-            t.style.opacity = 1;
+            const t = document.getElementById('status-toast'); t.innerText = msg; t.style.opacity = 1;
             setTimeout(() => t.style.opacity = 0, 2000);
         }
     </script>

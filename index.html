@@ -1,83 +1,45 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>Run Tracker - Select Mode</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Run Tracker V15</title>
     <style>
-        body {
-            background-color: #121212;
-            color: #ffffff;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100vh;
-            margin: 0;
-            text-align: center;
-        }
-        h1 { margin-bottom: 30px; font-size: 24px; letter-spacing: 1px; color: #aaa; }
+        body { background: #111; color: white; font-family: system-ui, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+        h1 { margin-bottom: 40px; font-size: 2rem; text-transform: uppercase; letter-spacing: 2px; }
         
-        .menu-btn {
-            display: block;
-            width: 80%;
-            max-width: 320px;
-            padding: 20px;
-            margin: 12px 0;
-            border-radius: 12px;
-            text-decoration: none;
-            font-weight: bold;
-            font-size: 18px;
-            transition: transform 0.1s;
-            border: 2px solid transparent;
-            position: relative;
-        }
-        .menu-btn:active { transform: scale(0.96); }
-        .desc { display: block; font-size: 12px; font-weight: normal; margin-top: 4px; opacity: 0.8; }
-        
-        /* 1. ECO MODE (Green) */
-        .btn-eco { background: #1b4332; color: #52b788; border-color: #2d6a4f; }
+        /* THE TWO MAIN BUTTONS */
+        .btn { display: block; width: 80%; padding: 25px; margin: 15px 0; text-align: center; text-decoration: none; font-size: 1.2rem; font-weight: bold; border-radius: 50px; transition: transform 0.1s; }
+        .btn:active { transform: scale(0.98); }
+        .btn-start { background: #00e676; color: #003300; box-shadow: 0 4px 15px rgba(0,230,118,0.4); }
+        .btn-manage { background: #333; color: #aaa; border: 1px solid #444; }
 
-        /* 2. PHOTO MODE (Blue) */
-        .btn-cam { background: #03045e; color: #90e0ef; border-color: #0077b6; }
-
-        /* 3. VIDEO MODE (Red/Orange) - NEW! */
-        .btn-vid { background: #5d0f0f; color: #ff9999; border-color: #8a1c1c; }
-
-        .footer { position: absolute; bottom: 20px; font-size: 11px; color: #444; }
+        /* STEALTH CURTAIN */
+        #stealth-btn { margin-top: 50px; background: transparent; border: 1px solid #333; color: #555; padding: 10px 20px; border-radius: 20px; cursor: pointer; }
+        #curtain { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: black; z-index: 9999; display: none; }
+        #curtain-hint { color: #222; position: absolute; bottom: 50px; width: 100%; text-align: center; font-size: 12px; }
     </style>
 </head>
 <body>
 
-    <h1>CHOOSE TRACKER</h1>
+    <h1>Run Tracker</h1>
 
-    <a href="eco.html" class="menu-btn btn-eco">
-        🔋 ECO TRACKER
-        <span class="desc">Screen Off • Walking • Low Battery</span>
-    </a>
+    <a href="recorder-hybrid.html" class="btn btn-start">START RUN 🏃‍♂️</a>
 
-    <a href="active-cam.html?v=102" class="menu-btn btn-cam">
-        📸 PHOTO RUN
-        <span class="desc">Screen On • Snapshots • Crash Proof</span>
-    </a>
+    <a href="session-manager.html" class="btn btn-manage">Saved Runs 📂</a>
 
-    <a href="video-mode.html" class="menu-btn btn-vid">
-        📹 VIDEO RUN
-        <span class="desc">Continuous Recording • High Data</span>
-    </a>
+    <button id="stealth-btn" onclick="toggleStealth()">👁️ Stealth Mode</button>
 
-    <a href="recorder-hybrid.html" class="menu-btn btn-vid">
-        📸/📹 PHOTO/VIDEO RECORDER RUN
-    <span class="desc">Hybrid Recorder • Photo Data • Video Data</span>
-    </a>
+    <div id="curtain" onclick="toggleStealth()">
+        <div id="curtain-hint">Tap anywhere to wake</div>
+    </div>
 
-    <a href="session-manager.html" class="menu-btn" style="background: #333; border: 1px solid #555;">
-    📂 SESSION MANAGER
-    <span class="desc">View, Download & Delete Saved Runs</span>
-</a>
-
-    <div class="footer">v2.2 • MergingFields</div>
+    <script>
+        function toggleStealth() {
+            const c = document.getElementById('curtain');
+            c.style.display = (c.style.display === 'block') ? 'none' : 'block';
+        }
+    </script>
 
 </body>
 </html>
