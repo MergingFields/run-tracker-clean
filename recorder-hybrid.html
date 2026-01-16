@@ -3,31 +3,33 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Run Tracker V19 (Wake Lock)</title>
+    <title>Run Tracker Hybrid V2</title>
     <style>
         body { margin: 0; background: #000; color: white; font-family: sans-serif; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
         
-        /* VIDEO AREA */
+        /* VIDEO PREVIEW */
         #video-container { position: relative; flex-grow: 1; background: #111; display: flex; align-items: center; justify-content: center; overflow: hidden; }
         video { width: 100%; height: 100%; object-fit: cover; }
         
-        /* DATA OVERLAY */
+        /* OVERLAYS */
         #overlay-data { position: absolute; top: 10px; left: 10px; z-index: 10; font-family: monospace; font-size: 14px; text-shadow: 1px 1px 2px black; pointer-events: none; }
+        #data-counters { position: absolute; bottom: 140px; left: 10px; color: #4fceff; font-family: monospace; font-size: 14px; pointer-events: none; z-index: 20; text-shadow: 1px 1px 2px black; }
         
-        /* CONTROLS */
-        #controls { height: 120px; background: #111; display: grid; grid-template-columns: 1fr 1fr 1fr 0.5fr; gap: 10px; padding: 10px; border-top: 1px solid #333; z-index: 20; }
+        /* CONTROLS AREA */
+        #controls { height: 120px; background: #111; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; padding: 10px; border-top: 1px solid #333; z-index: 20; }
         
         button { border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; color: #fff; background: #333; display: flex; flex-direction: column; align-items: center; justify-content: center; }
         button:active { background: #555; }
         
-        #btn-rec { background: #444; border: 2px solid #555; color: #ff4444; }
-        #btn-rec.recording { background: #ff4444; color: white; animation: pulse 2s infinite; }
+        /* The Video Toggle Button */
+        #btn-video { background: #444; border: 2px solid #555; color: #ff4444; }
+        #btn-video.recording { background: #ff4444; color: white; }
         
-        #btn-mark { background: #4fceff; color: #000; }
+        /* The Photo Button */
         #btn-photo { background: #ffd700; color: #000; }
-        #btn-back { background: #222; font-size: 24px; }
-
-        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
+        
+        /* The Finish Run Button */
+        #btn-finish { background: #00e676; color: #000; }
 
         /* TOAST */
         #status-toast { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.8); color: white; padding: 15px 25px; border-radius: 8px; font-size: 18px; pointer-events: none; opacity: 0; transition: opacity 0.3s; z-index: 100; }
@@ -35,142 +37,296 @@
 </head>
 <body>
 
+    <div id="start-screen" style="position:fixed; top:0; left:0; width:100%; height:100%; background:#000; z-index:9999; display:flex; align-items:center; justify-content:center; flex-direction:column;">
+        <button onclick="startRun()" style="padding:20px 40px; font-size:20px; background:#00e676; color:#000; border:none; border-radius:50px; font-weight:bold;">
+            🏃‍♂️ START NEW RUN
+        </button>
+        <p id="storage-warning" style="color:#888; margin-top:20px; font-family:sans-serif; font-size:12px;">Checking storage...</p>
+    </div>
+
     <div id="video-container">
         <video id="preview" autoplay playsinline muted></video>
+        
         <div id="overlay-data">
             SPD: <span id="disp-speed">0.0</span> km/h<br>
             ALT: <span id="disp-alt">0</span> m<br>
-            TIME: <span id="rec-timer">00:00</span>
+            RUN TIME: <span id="run-timer">00:00</span>
         </div>
+
+        <div id="data-counters">
+            📸 PHOTOS: <span id="cnt-photos">0</span><br>
+            🎥 CLIPS: <span id="cnt-videos">0</span>
+        </div>
+        
         <div id="status-toast"></div>
     </div>
 
     <div id="controls">
-        <button id="btn-rec" onclick="toggleRecording()">🔴 REC</button>
-        <button id="btn-mark" onclick="addMarker()">📍 MARK</button>
         <button id="btn-photo" onclick="takePhoto()">📸 IMG</button>
-        <button id="btn-back" onclick="window.location.href='session-manager.html'">↩</button>
-    </div>
-
-<div id="start-screen" style="position:fixed; top:0; left:0; width:100%; height:100%; background:#000; z-index:9999; display:flex; align-items:center; justify-content:center; flex-direction:column;">
-        <button onclick="startSystem()" style="padding:20px 40px; font-size:20px; background:#00e676; color:#000; border:none; border-radius:50px; font-weight:bold;">
-            🚀 Start System
-        </button>
-        <div id="status-log" style="color:#666; margin-top:20px; font-family:monospace; font-size:12px; text-align:center;">
-            Waiting for user input...
-        </div>
+        <button id="btn-video" onclick="toggleVideo()">🔴 REC VIDEO</button>
+        <button id="btn-finish" onclick="finishRun()">🏁 FINISH RUN</button>
     </div>
 
     <script>
-        // --- CONFIG ---
+        // --- CONFIGURATION ---
         const DB_NAME = "RunTrackerDB";
         const DB_VERSION = 2;
-        const SEGMENT_DURATION_MS = 60000; // 60 Seconds per video file
-        const CHUNK_SIZE = 50000;          // Size of image string chunks
+        const AUTO_SPLIT_MS = 60000; // Safety split for long videos (60s)
+        const CHUNK_SIZE = 50000;    // Text chunk size for Images
         
-        // --- STATE ---
-        let mediaRecorder;
-        let recordedChunks = [];
-        let isRecording = false;
-        let isAutoSplitting = false;
-        
-        // Session Data Containers
+        // --- GLOBAL STATE ---
+        // Run State
+        let isRunActive = false;
         let sessionStartTimestamp = 0; 
+        
+        // Video State
+        let mediaRecorder = null;
+        let isRecordingVideo = false;
+        let recordedChunks = [];
+        let videoSegmentCounter = 1; // Uniquely identifies clips in this run
+        let currentVideoStartOffset = 0;
+        let splitTimerInt = null;
+
+        // Data Containers
         let trackPoints = []; 
         let photos = [];      
         let videoMeta = [];   
         
-        // Timers & Sync
-        let currentClipStartOffset = 0;
-        let segmentCounter = 1;
-        let recordTimerInt = null;
-        let splitTimerInt = null;
+        // Timers
+        let runTimerInt = null;
         let wakeLock = null; 
 
-        // LIVE SENSOR DATA (Physics Engine)
-        let liveData = {
-            lat: 0, lng: 0,
-            alt: 0,
-            speed: 0,      
-            heading: 0,    
-            accel: 0,      
-            timestamp: 0   
-        };
+        // Physics Data
+        let liveData = { lat: 0, lng: 0, alt: 0, speed: 0, accel: 0, heading: 0, timestamp: 0 };
         let magneticHeading = 0; 
 
-        // --- 1. SYSTEM STARTUP ---
-        async function startSystem() {
-            const log = document.getElementById('status-log');
-            
-            // Compass Permission (iOS)
-            if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-                try {
-                    const response = await DeviceOrientationEvent.requestPermission();
-                    if (response === 'granted') window.addEventListener('deviceorientation', handleOrientation);
-                } catch (e) { console.error(e); }
-            } else {
-                window.addEventListener('deviceorientation', handleOrientation);
+        // --- 1. RUN LIFECYCLE (The Container) ---
+        
+        async function startRun() {
+            // 1. Storage Check
+            if (navigator.storage && navigator.storage.estimate) {
+                const { quota, usage } = await navigator.storage.estimate();
+                const mbLeft = (quota - usage) / 1024 / 1024;
+                if (mbLeft < 500) alert("⚠️ Low Storage! " + Math.round(mbLeft) + "MB left.");
             }
 
-            // Camera Start
+            // 2. Initialize Hardware
+            // Compass
+            if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+                try { await DeviceOrientationEvent.requestPermission(); window.addEventListener('deviceorientation', handleOrientation); } catch (e) {}
+            } else { window.addEventListener('deviceorientation', handleOrientation); }
+
+            // Camera (1080p @ 60fps attempt)
             try {
-                document.getElementById('start-screen').style.display = 'none';
-                // Request 1080p @ 60fps
                 const stream = await navigator.mediaDevices.getUserMedia({ 
                     video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 } }, 
                     audio: true 
                 });
-                onStreamSuccess(stream, "1080p 60fps");
+                initHardware(stream);
             } catch (err) {
-                console.warn("High-Res failed", err);
                 try {
-                    // Fallback
                     const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: true });
-                    onStreamSuccess(stream, "Standard Res");
-                } catch (err2) {
-                    alert("Camera Failed: " + err2.message);
-                    document.getElementById('start-screen').style.display = 'flex';
-                }
+                    initHardware(stream);
+                } catch (err2) { alert("Camera Failed: " + err2.message); return; }
             }
         }
 
-        function handleOrientation(event) {
-            if(event.webkitCompassHeading) magneticHeading = event.webkitCompassHeading;
-            else if (event.alpha) magneticHeading = 360 - event.alpha;
-        }
-
-        function onStreamSuccess(stream, mode) {
+        function initHardware(stream) {
+            document.getElementById('start-screen').style.display = 'none';
+            
             const videoEl = document.getElementById('preview');
             videoEl.srcObject = stream;
-            videoEl.setAttribute('playsinline', ''); 
-            videoEl.setAttribute('muted', '');
+            videoEl.setAttribute('playsinline', ''); videoEl.setAttribute('muted', '');
             videoEl.play();
             
-            setupRecorder(stream);
-            setupGPS();
+            // Setup Recorder Object (But don't start recording yet)
+            setupMediaRecorder(stream);
+            
+            // Setup GPS
+            if ("geolocation" in navigator) {
+                navigator.geolocation.watchPosition(updatePhysics, console.error, { enableHighAccuracy: true, maximumAge: 0 });
+            }
+
             initDB();
-            showToast("System Ready: " + mode);
+            
+            // START THE RUN SESSION
+            sessionStartTimestamp = Date.now();
+            isRunActive = true;
+            
+            // Start Run Timer UI
+            runTimerInt = setInterval(() => {
+                let s = Math.floor((Date.now() - sessionStartTimestamp) / 1000);
+                const m = Math.floor(s/60); const sc = s%60;
+                document.getElementById('run-timer').innerText = `${m.toString().padStart(2,'0')}:${sc.toString().padStart(2,'0')}`;
+            }, 1000);
+
+            requestWakeLock();
+            showToast("Run Started");
         }
 
-        // --- 2. PHYSICS ENGINE (GPS + Math) ---
-        function setupGPS() {
-            if ("geolocation" in navigator) {
-                navigator.geolocation.watchPosition(updatePhysicsEngine, console.error, { enableHighAccuracy: true, maximumAge: 0 });
+        function finishRun() {
+            if (isRecordingVideo) {
+                alert("Please stop recording video first.");
+                return;
+            }
+            if (!confirm("Finish Run and Save Data?")) return;
+
+            // SAVE JSON
+            const finalData = {
+                id: sessionStartTimestamp,
+                start_time_abs: new Date(sessionStartTimestamp).toISOString(),
+                duration: (Date.now() - sessionStartTimestamp)/1000,
+                track_points: trackPoints,
+                photos: photos,     // Contains 'src' (chunked base64)
+                videoData: videoMeta // Contains filenames referencing Blobs
+            };
+
+            const req = indexedDB.open(DB_NAME, DB_VERSION);
+            req.onsuccess = e => {
+                const tx = e.target.result.transaction("sessions", "readwrite");
+                tx.objectStore("sessions").put(finalData);
+                tx.oncomplete = () => {
+                    showToast("Saved!");
+                    setTimeout(() => window.location.href = 'session-manager.html', 1000);
+                };
+            };
+        }
+
+        // --- 2. VIDEO LIFECYCLE (The Content) ---
+
+        function setupMediaRecorder(stream) {
+            let options = { mimeType: 'video/webm;codecs=vp9' };
+            if (MediaRecorder.isTypeSupported('video/mp4; codecs=avc1,mp4a.40.2')) options = { mimeType: 'video/mp4; codecs=avc1,mp4a.40.2' };
+            else if (MediaRecorder.isTypeSupported('video/mp4')) options = { mimeType: 'video/mp4' };
+            
+            mediaRecorder = new MediaRecorder(stream, options);
+            mediaRecorder.ondataavailable = e => { if (e.data.size > 0) recordedChunks.push(e.data); };
+            mediaRecorder.onstop = handleVideoSave; // Triggered when we stop a specific clip
+        }
+
+        function toggleVideo() {
+            if (!isRunActive) return;
+
+            if (!isRecordingVideo) {
+                // START RECORDING
+                recordedChunks = [];
+                currentVideoStartOffset = (Date.now() - sessionStartTimestamp) / 1000;
+                
+                mediaRecorder.start();
+                isRecordingVideo = true;
+                
+                // Visuals
+                document.getElementById('btn-video').classList.add('recording');
+                document.getElementById('btn-video').innerText = "⬛ STOP VIDEO";
+                showToast("Video Started");
+
+                // Auto-Split Safety (Splits long single videos, but keeps them independent files)
+                clearInterval(splitTimerInt);
+                splitTimerInt = setInterval(() => {
+                    if (isRecordingVideo) {
+                        mediaRecorder.stop(); // Triggers save, then we restart immediately in handleVideoSave? 
+                        // Actually, for cleaner logic, we'll let handleVideoSave know to restart.
+                        // We use a temp flag? No, simpler: 
+                        // Just stop. handleVideoSave sees isRecordingVideo is TRUE, so it restarts.
+                    }
+                }, AUTO_SPLIT_MS);
+
+            } else {
+                // STOP RECORDING
+                isRecordingVideo = false; // Flag OFF first
+                clearInterval(splitTimerInt);
+                mediaRecorder.stop(); // Triggers handleVideoSave
+                
+                // Visuals
+                document.getElementById('btn-video').classList.remove('recording');
+                document.getElementById('btn-video').innerText = "🔴 REC VIDEO";
+                showToast("Video Stopped");
             }
         }
 
-        function updatePhysicsEngine(pos) {
+        function handleVideoSave() {
+            // 1. Create Blob
+            const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
+            recordedChunks = []; // Clear RAM
+
+            // 2. Generate Name
+            // RunID + Clip Counter ensures uniqueness across the whole run
+            const runIdStr = sessionStartTimestamp;
+            const filename = `Run_${runIdStr}_Clip_${String(videoSegmentCounter).padStart(3, '0')}.mp4`;
+            
+            const now = Date.now();
+            const endOffset = (now - sessionStartTimestamp) / 1000;
+
+            // 3. Save Blob to DB
+            const req = indexedDB.open(DB_NAME, DB_VERSION);
+            req.onsuccess = e => {
+                const db = e.target.result;
+                const tx = db.transaction("videos", "readwrite");
+                tx.objectStore("videos").put(blob, filename);
+
+                tx.oncomplete = () => {
+                    console.log("Saved:", filename);
+                    
+                    // 4. Update JSON Metadata
+                    videoMeta.push({
+                        filename: filename,
+                        start_offset: currentVideoStartOffset,
+                        end_offset: endOffset,
+                        duration: endOffset - currentVideoStartOffset
+                    });
+                    
+                    document.getElementById('cnt-videos').innerText = videoMeta.length;
+                    videoSegmentCounter++;
+                    currentVideoStartOffset = endOffset; // Ready for next split if needed
+
+                    // 5. AUTO-SPLIT LOGIC
+                    // If isRecordingVideo is still TRUE, it means we didn't click Stop,
+                    // the timer triggered this. So we must restart immediately.
+                    if (isRecordingVideo) {
+                        mediaRecorder.start();
+                    }
+                };
+            };
+        }
+
+        // --- 3. PHOTO LOGIC ---
+        function takePhoto() {
+            if (!isRunActive) return;
+            const v = document.getElementById('preview');
+            const c = document.createElement('canvas');
+            c.width = v.videoWidth || 1280; c.height = v.videoHeight || 720;
+            c.getContext('2d').drawImage(v,0,0,c.width,c.height);
+            
+            const fullBase64 = c.toDataURL('image/jpeg', 0.8);
+            
+            // Chunking
+            const chunks = [];
+            for(let i=0; i < fullBase64.length; i += CHUNK_SIZE) {
+                chunks.push(fullBase64.substring(i, i + CHUNK_SIZE));
+            }
+            
+            photos.push({
+                time_offset: (Date.now() - sessionStartTimestamp) / 1000,
+                timestamp: new Date().toISOString(),
+                src: chunks, // Array of strings
+                coords: { lat: liveData.lat, lng: liveData.lng },
+                heading: liveData.heading
+            });
+            
+            document.getElementById('cnt-photos').innerText = photos.length;
+            showToast("Photo Saved");
+        }
+
+        // --- 4. SENSORS & PHYSICS ---
+        function updatePhysics(pos) {
             const now = Date.now();
             const crd = pos.coords;
-            const dt = (now - liveData.timestamp) / 1000; // Delta time in seconds
-            
+            const dt = (now - liveData.timestamp) / 1000;
             const newSpeed = crd.speed || 0;
             
-            // Calc Acceleration (m/s²)
             let newAccel = 0;
             if (dt > 0 && dt < 5) newAccel = (newSpeed - liveData.speed) / dt;
 
-            // Calc Heading (GPS vs Compass)
             let bestHeading = crd.heading;
             if (!bestHeading || isNaN(bestHeading) || newSpeed < 0.5) bestHeading = magneticHeading;
 
@@ -180,15 +336,12 @@
                 timestamp: now
             };
 
-            // Update UI
             document.getElementById('disp-speed').innerText = (liveData.speed * 3.6).toFixed(1);
             document.getElementById('disp-alt').innerText = Math.round(liveData.alt);
 
-            // RECORD DATA POINT
-            if (isRecording) {
+            if (isRunActive) {
                 trackPoints.push({
                     time_offset: (now - sessionStartTimestamp) / 1000,
-                    timestamp: new Date(now).toISOString(),
                     coords: { lat: liveData.lat, lng: liveData.lng },
                     speed: liveData.speed,
                     acceleration: liveData.accel,
@@ -198,7 +351,12 @@
             }
         }
 
-        // --- 3. DATABASE ---
+        function handleOrientation(event) {
+            if(event.webkitCompassHeading) magneticHeading = event.webkitCompassHeading;
+            else if (event.alpha) magneticHeading = 360 - event.alpha;
+        }
+
+        // --- UTILS ---
         function initDB() {
             const req = indexedDB.open(DB_NAME, DB_VERSION);
             req.onupgradeneeded = e => {
@@ -207,194 +365,12 @@
                 if (!db.objectStoreNames.contains("videos")) db.createObjectStore("videos"); 
             };
         }
-
-        // --- 4. RECORDING LOGIC ---
-        function setupRecorder(stream) {
-            let options = { mimeType: 'video/webm;codecs=vp9' };
-            if (MediaRecorder.isTypeSupported('video/mp4; codecs=avc1,mp4a.40.2')) options = { mimeType: 'video/mp4; codecs=avc1,mp4a.40.2' };
-            else if (MediaRecorder.isTypeSupported('video/mp4')) options = { mimeType: 'video/mp4' };
-            
-            mediaRecorder = new MediaRecorder(stream, options);
-            mediaRecorder.ondataavailable = e => { if (e.data.size > 0) recordedChunks.push(e.data); };
-            mediaRecorder.onstop = handleStopOrSplit; 
-        }
-
-        function toggleRecording() {
-            if (!mediaRecorder) return;
-            if (!isRecording) startRecording();
-            else stopRecording();
-        }
-
-        function startRecording() {
-            sessionStartTimestamp = Date.now();
-            trackPoints = []; photos = []; videoMeta = [];
-            recordedChunks = []; segmentCounter = 1; currentClipStartOffset = 0;
-            
-            mediaRecorder.start();
-            isRecording = true;
-            isAutoSplitting = false;
-            
-            updateUI(true);
-            requestWakeLock();
-            showToast("Recording Started");
-
-            // Auto-Split Timer
-            splitTimerInt = setInterval(() => {
-                if(isRecording) {
-                    isAutoSplitting = true;
-                    mediaRecorder.stop(); 
-                    showToast("Saving Segment...");
-                }
-            }, SEGMENT_DURATION_MS);
-        }
-
-        function stopRecording() {
-            isRecording = false; 
-            clearInterval(splitTimerInt); 
-            mediaRecorder.stop(); 
-            updateUI(false);
-            releaseWakeLock();
-            showToast("Finalizing..."); 
-        }
-
-        // --- 5. DATA SAVING HANDLERS ---
-        
-        // A. Video Handler (Split logic)
-        function handleStopOrSplit() {
-            const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
-            recordedChunks = []; // Clear RAM
-
-            const dateStr = new Date(sessionStartTimestamp).toISOString().split('T')[0];
-            const timeStr = new Date(sessionStartTimestamp).toTimeString().split(' ')[0].replace(/:/g, '-');
-            const filename = `Run_${dateStr}_${timeStr}_Clip_${String(segmentCounter).padStart(2, '0')}.mp4`;
-            
-            const now = Date.now();
-            const endOffset = (now - sessionStartTimestamp) / 1000;
-            
-            // Save to DB
-            const req = indexedDB.open(DB_NAME, DB_VERSION);
-            req.onsuccess = e => {
-                const db = e.target.result;
-                const tx = db.transaction("videos", "readwrite");
-                tx.objectStore("videos").put(blob, filename);
-
-                tx.oncomplete = () => {
-                    console.log("Saved Video:", filename);
-                    
-                    // PUSH VIDEO METADATA TO ARRAY
-                    videoMeta.push({
-                        filename: filename,
-                        start_time: currentClipStartOffset,
-                        end_time: endOffset,
-                        duration: endOffset - currentClipStartOffset
-                    });
-
-                    currentClipStartOffset = endOffset;
-                    segmentCounter++;
-
-                    if (isAutoSplitting) {
-                        mediaRecorder.start();
-                        isAutoSplitting = false;
-                    } else if (!isRecording) {
-                        saveSessionJSON();
-                    }
-                };
-            };
-        }
-
-        // B. Photo Handler (Chunking Logic)
-        function takePhoto() {
-            const v = document.getElementById('preview');
-            const c = document.createElement('canvas');
-            c.width = v.videoWidth || 1280; c.height = v.videoHeight || 720;
-            c.getContext('2d').drawImage(v,0,0,c.width,c.height);
-            
-            // 1. Get Base64 String
-            const fullBase64 = c.toDataURL('image/jpeg', 0.8);
-            
-            // 2. Chunk it (Split into array)
-            const chunks = [];
-            for(let i=0; i < fullBase64.length; i += CHUNK_SIZE) {
-                chunks.push(fullBase64.substring(i, i + CHUNK_SIZE));
-            }
-            
-            // 3. Save with Physics Data
-            photos.push({
-                time_offset: (Date.now() - sessionStartTimestamp) / 1000,
-                timestamp: new Date().toISOString(),
-                src: chunks, // <--- SAVED AS ARRAY
-                coords: { lat: liveData.lat, lng: liveData.lng },
-                speed: liveData.speed,
-                acceleration: liveData.accel,
-                heading: liveData.heading,
-                altitude: liveData.alt
-            });
-            showToast("Photo Captured");
-        }
-        
-        function addMarker() {
-            photos.push({
-                time_offset: (Date.now() - sessionStartTimestamp) / 1000,
-                timestamp: new Date().toISOString(),
-                src: [], // Empty array for marker
-                type: 'marker',
-                coords: { lat: liveData.lat, lng: liveData.lng },
-                speed: liveData.speed,
-                acceleration: liveData.accel,
-                heading: liveData.heading,
-                altitude: liveData.alt
-            });
-            showToast("Marker Set");
-        }
-
-        // C. Final Session Save
-        function saveSessionJSON() {
-            if (!confirm("Run Finished. Save Data?")) return;
-
-            const finalData = {
-                id: sessionStartTimestamp,
-                start_time_abs: new Date(sessionStartTimestamp).toISOString(),
-                duration: (Date.now() - sessionStartTimestamp)/1000,
-                track_points: trackPoints,
-                photos: photos,    // Contains 'src' (chunked)
-                videoData: videoMeta // Contains start/stop offsets
-            };
-
-            const req = indexedDB.open(DB_NAME, DB_VERSION);
-            req.onsuccess = e => {
-                const tx = e.target.result.transaction("sessions", "readwrite");
-                tx.objectStore("sessions").put(finalData);
-                tx.oncomplete = () => {
-                    showToast("Session Saved!");
-                    setTimeout(() => window.location.href = 'session-manager.html', 1000);
-                };
-            };
-        }
-
-        // --- 6. UTILS ---
         function requestWakeLock() { if ('wakeLock' in navigator) navigator.wakeLock.request('screen').catch(e=>{}); }
-        function releaseWakeLock() { if (wakeLock) wakeLock.release(); }
-        
-        function updateUI(rec) {
-            const btn = document.getElementById('btn-rec');
-            if(rec) {
-                btn.classList.add('recording'); 
-                btn.innerText = "⬛ STOP"; 
-                recordTimerInt = setInterval(() => { 
-                    let s = Math.floor((Date.now()-sessionStartTimestamp)/1000); 
-                    document.getElementById('rec-timer').innerText = new Date(s*1000).toISOString().substr(14,5);
-                }, 1000);
-            } else {
-                btn.classList.remove('recording'); 
-                btn.innerText = "🔴 REC";
-                clearInterval(recordTimerInt);
-            }
-        }
         function showToast(msg) {
             const t = document.getElementById('status-toast');
             t.innerText = msg; t.style.opacity = 1;
             setTimeout(() => t.style.opacity = 0, 2000);
         }
     </script>
-    </body>
+</body>
 </html>
