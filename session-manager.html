@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Session Manager (Restored)</title>
+    <title>Session Manager V15 (Strict)</title>
     <style>
         body { background: #111; color: #eee; font-family: system-ui; padding: 20px; }
         h1 { border-bottom: 1px solid #333; padding-bottom: 10px; display: flex; align-items: center; justify-content: space-between; }
@@ -23,24 +23,23 @@
     <a href="recorder-hybrid.html" class="home-link">← New Recording</a>
     <h1>Recorded Sessions</h1>
     <div id="session-list"></div>
-    <div id="debug-msg" style="color:#666; font-size:10px;"></div>
 
     <script>
+        // MATCHING VERSION 99
         const DB_NAME = "RunTrackerDB";
+        const DB_VERSION = 99;
 
         function loadSessions() {
-            // OPEN WITHOUT VERSION NUMBER -> Opens whatever exists (Universal Fix)
-            const req = indexedDB.open(DB_NAME);
+            const req = indexedDB.open(DB_NAME, DB_VERSION);
             
+            req.onupgradeneeded = e => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains("sessions")) db.createObjectStore("sessions", { keyPath: "id" });
+                if (!db.objectStoreNames.contains("videos")) db.createObjectStore("videos");
+            };
+
             req.onsuccess = e => {
                 const db = e.target.result;
-                document.getElementById('debug-msg').innerText = `Connected to DB v${db.version}`;
-
-                if (!db.objectStoreNames.contains("sessions")) {
-                    document.getElementById("session-list").innerHTML = "No sessions found (Empty DB).";
-                    return;
-                }
-
                 const tx = db.transaction("sessions", "readonly");
                 const store = tx.objectStore("sessions");
                 const request = store.getAll();
@@ -86,8 +85,6 @@
                     });
                 };
             };
-            
-            req.onerror = () => alert("DB Error.");
         }
 
         function calcDistance(pts) {
@@ -105,7 +102,7 @@
         }
 
         function downloadJSON(id) {
-            const req = indexedDB.open(DB_NAME);
+            const req = indexedDB.open(DB_NAME, DB_VERSION);
             req.onsuccess = e => {
                 const db = e.target.result;
                 db.transaction("sessions", "readonly").objectStore("sessions").get(id).onsuccess = ev => {
@@ -120,7 +117,7 @@
         }
 
         function downloadVideo(filename) {
-            const req = indexedDB.open(DB_NAME);
+            const req = indexedDB.open(DB_NAME, DB_VERSION);
             req.onsuccess = e => {
                 const db = e.target.result;
                 db.transaction("videos", "readonly").objectStore("videos").get(filename).onsuccess = ev => {
@@ -134,7 +131,7 @@
 
         function deleteRun(id) {
             if(!confirm("Delete?")) return;
-            const req = indexedDB.open(DB_NAME);
+            const req = indexedDB.open(DB_NAME, DB_VERSION);
             req.onsuccess = e => {
                 const db = e.target.result;
                 const tx = db.transaction(["sessions", "videos"], "readwrite");
