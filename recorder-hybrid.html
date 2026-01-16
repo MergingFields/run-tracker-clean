@@ -3,27 +3,27 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Run Tracker V30 (Redemption)</title>
+    <title>Run Tracker V30 (Stable Restore)</title>
     <style>
-        body { margin: 0; background: #000; color: white; font-family: sans-serif; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
+        /* 1. VISUALS - RESTORED TO SIMPLE "MORNING" STYLE */
+        body { margin: 0; background: #000; color: white; font-family: system-ui, sans-serif; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
         
-        /* VIDEO FEED */
         #view-container { position: relative; flex-grow: 1; background: #111; overflow: hidden; }
         video { width: 100%; height: 100%; object-fit: cover; }
         
-        /* HUD DATA */
+        /* DATA HUD - Clean & Sharp */
         #overlay-data { position: absolute; top: 20px; left: 20px; z-index: 10; font-size: 18px; font-weight: bold; text-shadow: 2px 2px 4px #000; pointer-events: none; }
         .val { color: #4fceff; }
         .rec-active { color: #ff4444; display: none; animation: blink 1s infinite; }
         @keyframes blink { 50% { opacity: 0.5; } }
 
-        /* SAVE SHIELD (Prevents leaving before save is done) */
+        /* SAVE SHIELD - PREVENTS DATA LOSS */
         #save-screen { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 100; display: none; flex-direction: column; align-items: center; justify-content: center; }
-        .spinner { width: 50px; height: 50px; border: 5px solid #333; border-top: 5px solid #00e676; border-radius: 50%; animation: spin 1s linear infinite; }
+        .spinner { width: 60px; height: 60px; border: 6px solid #333; border-top: 6px solid #00e676; border-radius: 50%; animation: spin 1s linear infinite; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        #save-status { margin-top: 20px; font-size: 20px; color: #00e676; font-family: monospace; }
+        #save-status { margin-top: 25px; font-size: 22px; color: #00e676; font-family: monospace; }
 
-        /* CONTROLS */
+        /* CONTROLS - SIMPLE LAYOUT */
         #controls { height: 140px; background: #000; display: flex; align-items: center; justify-content: space-around; padding: 10px; border-top: 1px solid #333; z-index: 20; }
         
         .btn { width: 80px; height: 80px; border-radius: 50%; border: none; font-weight: bold; color: white; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 14px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
@@ -52,7 +52,6 @@
             <div>SPD: <span id="v-spd" class="val">0.0</span> km/h</div>
             <div>ALT: <span id="v-alt" class="val">0</span> m</div>
         </div>
-        
         <div id="toast"></div>
     </div>
 
@@ -63,7 +62,7 @@
     </div>
 
     <script>
-        // *** DB RESET TO FIX ERRORS ***
+        // *** VERSION 5: Forces a clean DB rebuild to fix errors ***
         const DB_NAME = "RunTrackerDB";
         const DB_VERSION = 5; 
         
@@ -77,16 +76,15 @@
         let wakeLock = null; 
         let timerInt = null;
         
-        // GPS State
         let curPos = { lat:0, lng:0, spd:0, alt:0, hdg:0, acc:0, time:0 };
         let lastPos = null;
 
         const video = document.getElementById('preview');
 
-        // --- 1. SETUP ---
+        // --- 1. SETUP (Safe Resolution 720p) ---
         async function init() {
             try {
-                // FORCE 720p - The "Golden Rule" for Mobile Stability
+                // FORCE 720p: This prevents the "Black Screen after 22s" crash
                 const stream = await navigator.mediaDevices.getUserMedia({ 
                     video: { facingMode: "environment", width: 1280, height: 720 }, 
                     audio: true 
@@ -98,8 +96,6 @@
                 }
 
                 initDB();
-                
-                // Wake Lock (Keep Screen On)
                 if('wakeLock' in navigator) try { wakeLock = await navigator.wakeLock.request('screen'); } catch(e){}
 
             } catch (err) { alert("Camera Error: " + err); }
@@ -109,15 +105,15 @@
             const req = indexedDB.open(DB_NAME, DB_VERSION);
             req.onupgradeneeded = e => {
                 const db = e.target.result;
-                // Wipe and Rebuild if needed
+                // Clean slate to fix database corruption
                 if (db.objectStoreNames.contains("sessions")) db.deleteObjectStore("sessions");
                 if (db.objectStoreNames.contains("videos")) db.deleteObjectStore("videos");
                 
                 db.createObjectStore("sessions", { keyPath: "id" });
                 db.createObjectStore("videos");
-                console.log("DB Cleaned (V5)");
+                console.log("DB Rebuilt (V5)");
             };
-            req.onerror = e => alert("DB Error: " + e.target.error);
+            req.onerror = e => alert("DB Init Error: " + e.target.error);
         }
 
         // --- 2. GPS & ACCEL ---
@@ -126,7 +122,6 @@
             const now = Date.now();
             const t = sessionID ? (now - sessionID) / 1000 : 0;
             
-            // Acceleration Logic
             let acc = 0;
             if (lastPos && c.speed !== null && lastPos.spd !== null) {
                 const dt = (now - lastPos.ts) / 1000;
@@ -157,7 +152,7 @@
             recordedChunks = [];
             
             try {
-                // Use default browser codec (Safest for preventing crashes)
+                // Use default codec (Browser knows best) to prevent encoder crash
                 mediaRecorder = new MediaRecorder(video.srcObject);
             } catch(e) { alert("Recorder Failed"); return; }
 
@@ -168,7 +163,7 @@
             // CONNECT STOP EVENT TO SAVE CHAIN
             mediaRecorder.onstop = saveEverything;
             
-            // Flush buffer every 1s (Fixes Black Screen/Memory Crash)
+            // 1s timeslice to keep memory low (Fixes long recording crash)
             mediaRecorder.start(1000); 
             
             isRecording = true;
@@ -177,7 +172,7 @@
         }
 
         function stopRec() {
-            // IMMEDIATE BLOCKING UI
+            // IMMEDIATE BLOCKING UI - Prevents "No Data Saved" error
             document.getElementById('save-screen').style.display = 'flex';
             document.getElementById('save-status').innerText = "WRITING VIDEO...";
             
@@ -189,12 +184,11 @@
         // --- 4. THE SAVE CHAIN (Guarantee) ---
         function saveEverything() {
             if(recordedChunks.length === 0) {
-                alert("No video captured!");
+                alert("No video data recorded!");
                 window.location.href = 'session-manager.html';
                 return;
             }
 
-            // 1. Prepare Blob
             const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
             const dateStr = new Date(sessionID).toISOString().split('T')[0];
             const timeStr = new Date(sessionID).toTimeString().split(' ')[0].replace(/:/g, '-');
@@ -206,20 +200,19 @@
                 endTime: (Date.now() - sessionID)/1000
             });
 
-            // 2. Open DB
             const req = indexedDB.open(DB_NAME, DB_VERSION);
             
             req.onsuccess = e => {
                 const db = e.target.result;
                 
-                // 3. Save Video First
+                // STEP 1: SAVE VIDEO
                 const txVid = db.transaction("videos", "readwrite");
                 txVid.objectStore("videos").put(blob, fname);
                 
                 txVid.oncomplete = () => {
-                    document.getElementById('save-status').innerText = "WRITING JSON...";
+                    document.getElementById('save-status').innerText = "WRITING DATA...";
                     
-                    // 4. Save JSON Second (Only if video succeeded)
+                    // STEP 2: SAVE JSON (Only if video succeeded)
                     const finalData = {
                         id: sessionID,
                         date: new Date(sessionID).toISOString(),
@@ -233,8 +226,8 @@
                     txJson.objectStore("sessions").put(finalData);
                     
                     txJson.oncomplete = () => {
-                        // 5. Success -> Redirect
-                        document.getElementById('save-status').innerText = "SUCCESS!";
+                        // STEP 3: SUCCESS -> REDIRECT
+                        document.getElementById('save-status').innerText = "DONE!";
                         setTimeout(() => window.location.href = 'session-manager.html', 500);
                     };
                     
@@ -242,7 +235,7 @@
                 };
                 
                 txVid.onerror = () => {
-                    alert("Video Save Failed (Disk Full?)");
+                    alert("Video Save Failed (Device Full?)");
                     document.getElementById('save-screen').style.display = 'none';
                 };
             };
@@ -255,12 +248,9 @@
             const c = document.createElement('canvas');
             c.width = video.videoWidth; c.height = video.videoHeight;
             c.getContext('2d').drawImage(video, 0, 0);
-            
-            const d = c.toDataURL('image/jpeg', 0.6); // Compress
-            
+            const d = c.toDataURL('image/jpeg', 0.6);
             const chunks = [];
             for(let i=0; i<d.length; i+=50000) chunks.push(d.substring(i, i+50000));
-            
             photos.push({ time: curPos.time, lat: curPos.lat, lng: curPos.lng, src_chunks: chunks });
             showToast("Photo Saved");
         }
