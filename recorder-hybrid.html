@@ -37,11 +37,11 @@
 </head>
 <body>
 
-    <div id="start-screen" style="position:fixed; top:0; left:0; width:100%; height:100%; background:#000; z-index:9999; display:flex; align-items:center; justify-content:center; flex-direction:column;">
+<div id="start-screen" style="position:fixed; top:0; left:0; width:100%; height:100%; background:#000; z-index:9999; display:flex; align-items:center; justify-content:center; flex-direction:column;">
         <button onclick="startRun()" style="padding:20px 40px; font-size:20px; background:#00e676; color:#000; border:none; border-radius:50px; font-weight:bold;">
-            🏃‍♂️ START NEW RUN
+            🏃‍♂️ START RUN
         </button>
-        <p id="storage-warning" style="color:#888; margin-top:20px; font-family:sans-serif; font-size:12px;">Checking storage...</p>
+        <p id="db-status" style="color:#ff4444; margin-top:20px; font-family:monospace; font-weight:bold;">Waiting for DB...</p>
     </div>
 
     <div id="video-container">
@@ -50,7 +50,7 @@
         <div id="overlay-data">
             SPD: <span id="disp-speed">0.0</span> km/h<br>
             ALT: <span id="disp-alt">0</span> m<br>
-            RUN TIME: <span id="run-timer">00:00</span>
+            TIME: <span id="run-timer">00:00</span>
         </div>
 
         <div id="data-counters">
@@ -63,19 +63,19 @@
 
     <div id="controls">
         <button id="btn-photo" onclick="takePhoto()">📸 IMG</button>
-        <button id="btn-video" onclick="toggleVideo()">🔴 REC VIDEO</button>
-        <button id="btn-finish" onclick="finishRun()">🏁 FINISH RUN</button>
+        <button id="btn-video" onclick="toggleVideo()">🔴 VIDEO</button>
+        <button id="btn-finish" onclick="finishRun()">🏁 FINISH</button>
     </div>
 
-    <script>
-        // --- CONFIGURATION ---
+<script>
+        // --- CRITICAL CONFIG ---
         const DB_NAME = "RunTrackerDB";
-        const DB_VERSION = 2;
-        const AUTO_SPLIT_MS = 60000; // Safety split for long videos (60s)
-        const CHUNK_SIZE = 50000;    // Text chunk size for Images
+        const DB_VERSION = 99; // MUST MATCH SESSION MANAGER
+        const AUTO_SPLIT_MS = 60000; 
+        const CHUNK_SIZE = 50000;
         
-        // --- GLOBAL STATE ---
-        // Run State
+        // --- STATE ---
+        let db = null; // Global DB Reference
         let isRunActive = false;
         let sessionStartTimestamp = 0; 
         
@@ -83,7 +83,7 @@
         let mediaRecorder = null;
         let isRecordingVideo = false;
         let recordedChunks = [];
-        let videoSegmentCounter = 1; // Uniquely identifies clips in this run
+        let videoSegmentCounter = 1; 
         let currentVideoStartOffset = 0;
         let splitTimerInt = null;
 
@@ -96,246 +96,212 @@
         let runTimerInt = null;
         let wakeLock = null; 
 
-        // Physics Data
+        // Physics
         let liveData = { lat: 0, lng: 0, alt: 0, speed: 0, accel: 0, heading: 0, timestamp: 0 };
         let magneticHeading = 0; 
 
-        // --- 1. RUN LIFECYCLE (The Container) ---
+        // --- 1. IMMEDIATE DB INIT (To Prove Connection) ---
+        function initDB() {
+            const statusEl = document.getElementById('db-status');
+            console.log("Opening DB...");
+            
+            const req = indexedDB.open(DB_NAME, DB_VERSION);
+
+            req.onerror = (event) => {
+                console.error("DB Error:", event);
+                statusEl.innerText = "❌ DB ERROR: " + event.target.error;
+                alert("Database Version Conflict! Please delete the app/website data in settings.");
+            };
+
+            req.onblocked = () => {
+                 statusEl.innerText = "❌ DB BLOCKED. Close other tabs.";
+            };
+
+            req.onupgradeneeded = (event) => {
+                console.log("Upgrading DB...");
+                db = event.target.result;
+                if (!db.objectStoreNames.contains("sessions")) db.createObjectStore("sessions", { keyPath: "id" });
+                if (!db.objectStoreNames.contains("videos")) db.createObjectStore("videos"); 
+            };
+
+            req.onsuccess = (event) => {
+                db = event.target.result;
+                console.log("DB Success!");
+                statusEl.innerText = "✅ DB Ready (v99)";
+                statusEl.style.color = "#00e676";
+            };
+        }
         
+        // Call immediately on load
+        initDB();
+
+
+        // --- 2. RUN CONTROLS ---
         async function startRun() {
-            // 1. Storage Check
-            if (navigator.storage && navigator.storage.estimate) {
-                const { quota, usage } = await navigator.storage.estimate();
-                const mbLeft = (quota - usage) / 1024 / 1024;
-                if (mbLeft < 500) alert("⚠️ Low Storage! " + Math.round(mbLeft) + "MB left.");
-            }
-
-            // 2. Initialize Hardware
-            // Compass
-            if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-                try { await DeviceOrientationEvent.requestPermission(); window.addEventListener('deviceorientation', handleOrientation); } catch (e) {}
-            } else { window.addEventListener('deviceorientation', handleOrientation); }
-
-            // Camera (1080p @ 60fps attempt)
+            if (!db) return alert("Database not ready yet!");
+            
+            // Camera
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({ 
                     video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 } }, 
                     audio: true 
                 });
-                initHardware(stream);
+                startHardware(stream);
             } catch (err) {
+                // Fallback
                 try {
                     const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: true });
-                    initHardware(stream);
-                } catch (err2) { alert("Camera Failed: " + err2.message); return; }
+                    startHardware(stream);
+                } catch (e) { alert("Camera failed: " + e.message); }
             }
         }
 
-        function initHardware(stream) {
+        function startHardware(stream) {
             document.getElementById('start-screen').style.display = 'none';
-            
-            const videoEl = document.getElementById('preview');
-            videoEl.srcObject = stream;
-            videoEl.setAttribute('playsinline', ''); videoEl.setAttribute('muted', '');
-            videoEl.play();
-            
-            // Setup Recorder Object (But don't start recording yet)
-            setupMediaRecorder(stream);
-            
-            // Setup GPS
-            if ("geolocation" in navigator) {
-                navigator.geolocation.watchPosition(updatePhysics, console.error, { enableHighAccuracy: true, maximumAge: 0 });
-            }
+            const v = document.getElementById('preview');
+            v.srcObject = stream;
+            v.setAttribute('playsinline', ''); v.setAttribute('muted', ''); v.play();
 
-            initDB();
-            
-            // START THE RUN SESSION
+            setupMediaRecorder(stream);
+            setupGPS();
+
             sessionStartTimestamp = Date.now();
             isRunActive = true;
             
-            // Start Run Timer UI
             runTimerInt = setInterval(() => {
                 let s = Math.floor((Date.now() - sessionStartTimestamp) / 1000);
-                const m = Math.floor(s/60); const sc = s%60;
-                document.getElementById('run-timer').innerText = `${m.toString().padStart(2,'0')}:${sc.toString().padStart(2,'0')}`;
+                let m = Math.floor(s/60); let sc = s%60;
+                document.getElementById('run-timer').innerText = `${m}:${sc.toString().padStart(2,'0')}`;
             }, 1000);
-
+            
             requestWakeLock();
             showToast("Run Started");
         }
 
         function finishRun() {
-            if (isRecordingVideo) {
-                alert("Please stop recording video first.");
-                return;
-            }
-            if (!confirm("Finish Run and Save Data?")) return;
+            if (isRecordingVideo) return alert("Stop video first!");
+            if (!confirm("Save Run?")) return;
 
-            // SAVE JSON
             const finalData = {
                 id: sessionStartTimestamp,
                 start_time_abs: new Date(sessionStartTimestamp).toISOString(),
                 duration: (Date.now() - sessionStartTimestamp)/1000,
                 track_points: trackPoints,
-                photos: photos,     // Contains 'src' (chunked base64)
-                videoData: videoMeta // Contains filenames referencing Blobs
+                photos: photos,
+                videoData: videoMeta
             };
 
-            const req = indexedDB.open(DB_NAME, DB_VERSION);
-            req.onsuccess = e => {
-                const tx = e.target.result.transaction("sessions", "readwrite");
-                tx.objectStore("sessions").put(finalData);
-                tx.oncomplete = () => {
-                    showToast("Saved!");
-                    setTimeout(() => window.location.href = 'session-manager.html', 1000);
-                };
+            const tx = db.transaction("sessions", "readwrite");
+            tx.objectStore("sessions").put(finalData);
+            
+            tx.oncomplete = () => {
+                showToast("Saved!");
+                setTimeout(() => window.location.href = 'session-manager.html', 1000);
             };
+            tx.onerror = (e) => alert("Save Failed: " + e.target.error);
         }
 
-        // --- 2. VIDEO LIFECYCLE (The Content) ---
-
+        // --- 3. VIDEO CONTROLS ---
         function setupMediaRecorder(stream) {
-            let options = { mimeType: 'video/webm;codecs=vp9' };
-            if (MediaRecorder.isTypeSupported('video/mp4; codecs=avc1,mp4a.40.2')) options = { mimeType: 'video/mp4; codecs=avc1,mp4a.40.2' };
-            else if (MediaRecorder.isTypeSupported('video/mp4')) options = { mimeType: 'video/mp4' };
+            let options = { mimeType: 'video/mp4' }; 
+            if (!MediaRecorder.isTypeSupported('video/mp4')) options = { mimeType: 'video/webm' };
             
             mediaRecorder = new MediaRecorder(stream, options);
-            mediaRecorder.ondataavailable = e => { if (e.data.size > 0) recordedChunks.push(e.data); };
-            mediaRecorder.onstop = handleVideoSave; // Triggered when we stop a specific clip
+            mediaRecorder.ondataavailable = e => { if(e.data.size > 0) recordedChunks.push(e.data); };
+            mediaRecorder.onstop = saveVideoToDB;
         }
 
         function toggleVideo() {
             if (!isRunActive) return;
-
+            
             if (!isRecordingVideo) {
-                // START RECORDING
+                // Start
                 recordedChunks = [];
                 currentVideoStartOffset = (Date.now() - sessionStartTimestamp) / 1000;
-                
                 mediaRecorder.start();
                 isRecordingVideo = true;
                 
-                // Visuals
-                document.getElementById('btn-video').classList.add('recording');
                 document.getElementById('btn-video').innerText = "⬛ STOP VIDEO";
-                showToast("Video Started");
-
-                // Auto-Split Safety (Splits long single videos, but keeps them independent files)
-                clearInterval(splitTimerInt);
-                splitTimerInt = setInterval(() => {
-                    if (isRecordingVideo) {
-                        mediaRecorder.stop(); // Triggers save, then we restart immediately in handleVideoSave? 
-                        // Actually, for cleaner logic, we'll let handleVideoSave know to restart.
-                        // We use a temp flag? No, simpler: 
-                        // Just stop. handleVideoSave sees isRecordingVideo is TRUE, so it restarts.
-                    }
-                }, AUTO_SPLIT_MS);
-
-            } else {
-                // STOP RECORDING
-                isRecordingVideo = false; // Flag OFF first
-                clearInterval(splitTimerInt);
-                mediaRecorder.stop(); // Triggers handleVideoSave
+                document.getElementById('btn-video').classList.add('recording');
                 
-                // Visuals
+                // Auto-split logic
+                clearInterval(splitTimerInt);
+                splitTimerInt = setInterval(() => { if(isRecordingVideo) mediaRecorder.stop(); }, AUTO_SPLIT_MS);
+                
+            } else {
+                // Stop
+                isRecordingVideo = false;
+                clearInterval(splitTimerInt);
+                mediaRecorder.stop();
+                
+                document.getElementById('btn-video').innerText = "🔴 VIDEO";
                 document.getElementById('btn-video').classList.remove('recording');
-                document.getElementById('btn-video').innerText = "🔴 REC VIDEO";
-                showToast("Video Stopped");
             }
         }
 
-        function handleVideoSave() {
-            // 1. Create Blob
+        function saveVideoToDB() {
             const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
-            recordedChunks = []; // Clear RAM
+            recordedChunks = []; 
 
-            // 2. Generate Name
-            // RunID + Clip Counter ensures uniqueness across the whole run
-            const runIdStr = sessionStartTimestamp;
-            const filename = `Run_${runIdStr}_Clip_${String(videoSegmentCounter).padStart(3, '0')}.mp4`;
-            
-            const now = Date.now();
-            const endOffset = (now - sessionStartTimestamp) / 1000;
+            const filename = `Run_${sessionStartTimestamp}_Clip_${String(videoSegmentCounter).padStart(3, '0')}.mp4`;
+            const endOffset = (Date.now() - sessionStartTimestamp) / 1000;
 
-            // 3. Save Blob to DB
-            const req = indexedDB.open(DB_NAME, DB_VERSION);
-            req.onsuccess = e => {
-                const db = e.target.result;
-                const tx = db.transaction("videos", "readwrite");
-                tx.objectStore("videos").put(blob, filename);
+            const tx = db.transaction("videos", "readwrite");
+            tx.objectStore("videos").put(blob, filename);
 
-                tx.oncomplete = () => {
-                    console.log("Saved:", filename);
-                    
-                    // 4. Update JSON Metadata
-                    videoMeta.push({
-                        filename: filename,
-                        start_offset: currentVideoStartOffset,
-                        end_offset: endOffset,
-                        duration: endOffset - currentVideoStartOffset
-                    });
-                    
-                    document.getElementById('cnt-videos').innerText = videoMeta.length;
-                    videoSegmentCounter++;
-                    currentVideoStartOffset = endOffset; // Ready for next split if needed
-
-                    // 5. AUTO-SPLIT LOGIC
-                    // If isRecordingVideo is still TRUE, it means we didn't click Stop,
-                    // the timer triggered this. So we must restart immediately.
-                    if (isRecordingVideo) {
-                        mediaRecorder.start();
-                    }
-                };
+            tx.oncomplete = () => {
+                console.log("Video Saved:", filename);
+                videoMeta.push({
+                    filename: filename,
+                    start_offset: currentVideoStartOffset,
+                    end_offset: endOffset,
+                    duration: endOffset - currentVideoStartOffset
+                });
+                document.getElementById('cnt-videos').innerText = videoMeta.length;
+                videoSegmentCounter++;
+                currentVideoStartOffset = endOffset;
+                
+                // If auto-split triggered this, restart immediately
+                if (isRecordingVideo) mediaRecorder.start();
             };
+            
+            tx.onerror = (e) => console.error("Video Save Failed:", e);
         }
 
-        // --- 3. PHOTO LOGIC ---
+        // --- 4. PHOTO & SENSOR ---
         function takePhoto() {
             if (!isRunActive) return;
             const v = document.getElementById('preview');
             const c = document.createElement('canvas');
-            c.width = v.videoWidth || 1280; c.height = v.videoHeight || 720;
-            c.getContext('2d').drawImage(v,0,0,c.width,c.height);
-            
+            c.width = v.videoWidth; c.height = v.videoHeight;
+            c.getContext('2d').drawImage(v,0,0);
             const fullBase64 = c.toDataURL('image/jpeg', 0.8);
             
-            // Chunking
             const chunks = [];
-            for(let i=0; i < fullBase64.length; i += CHUNK_SIZE) {
-                chunks.push(fullBase64.substring(i, i + CHUNK_SIZE));
-            }
+            for(let i=0; i < fullBase64.length; i += CHUNK_SIZE) chunks.push(fullBase64.substring(i, i + CHUNK_SIZE));
             
             photos.push({
                 time_offset: (Date.now() - sessionStartTimestamp) / 1000,
-                timestamp: new Date().toISOString(),
-                src: chunks, // Array of strings
-                coords: { lat: liveData.lat, lng: liveData.lng },
-                heading: liveData.heading
+                src: chunks,
+                coords: { lat: liveData.lat, lng: liveData.lng }
             });
-            
             document.getElementById('cnt-photos').innerText = photos.length;
-            showToast("Photo Saved");
         }
 
-        // --- 4. SENSORS & PHYSICS ---
+        function setupGPS() {
+            if ("geolocation" in navigator) navigator.geolocation.watchPosition(updatePhysics, console.error, { enableHighAccuracy: true });
+        }
+
         function updatePhysics(pos) {
             const now = Date.now();
             const crd = pos.coords;
             const dt = (now - liveData.timestamp) / 1000;
             const newSpeed = crd.speed || 0;
-            
             let newAccel = 0;
             if (dt > 0 && dt < 5) newAccel = (newSpeed - liveData.speed) / dt;
 
-            let bestHeading = crd.heading;
-            if (!bestHeading || isNaN(bestHeading) || newSpeed < 0.5) bestHeading = magneticHeading;
-
-            liveData = {
-                lat: crd.latitude, lng: crd.longitude, alt: crd.altitude || 0,
-                speed: newSpeed, accel: newAccel, heading: bestHeading || 0,
-                timestamp: now
-            };
-
+            liveData = { lat: crd.latitude, lng: crd.longitude, alt: crd.altitude||0, speed: newSpeed, accel: newAccel, timestamp: now };
+            
             document.getElementById('disp-speed').innerText = (liveData.speed * 3.6).toFixed(1);
             document.getElementById('disp-alt').innerText = Math.round(liveData.alt);
 
@@ -345,26 +311,11 @@
                     coords: { lat: liveData.lat, lng: liveData.lng },
                     speed: liveData.speed,
                     acceleration: liveData.accel,
-                    heading: liveData.heading,
                     altitude: liveData.alt
                 });
             }
         }
-
-        function handleOrientation(event) {
-            if(event.webkitCompassHeading) magneticHeading = event.webkitCompassHeading;
-            else if (event.alpha) magneticHeading = 360 - event.alpha;
-        }
-
-        // --- UTILS ---
-        function initDB() {
-            const req = indexedDB.open(DB_NAME, DB_VERSION);
-            req.onupgradeneeded = e => {
-                const db = e.target.result;
-                if (!db.objectStoreNames.contains("sessions")) db.createObjectStore("sessions", { keyPath: "id" });
-                if (!db.objectStoreNames.contains("videos")) db.createObjectStore("videos"); 
-            };
-        }
+        
         function requestWakeLock() { if ('wakeLock' in navigator) navigator.wakeLock.request('screen').catch(e=>{}); }
         function showToast(msg) {
             const t = document.getElementById('status-toast');
@@ -372,5 +323,6 @@
             setTimeout(() => t.style.opacity = 0, 2000);
         }
     </script>
+    
 </body>
 </html>
