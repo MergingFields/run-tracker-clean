@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Session Manager V300</title>
+    <title>Session Manager V15</title>
     <style>
         body { background: #111; color: #eee; font-family: system-ui; padding: 20px; }
         h1 { border-bottom: 1px solid #333; padding-bottom: 10px; display: flex; align-items: center; justify-content: space-between; }
@@ -13,117 +13,124 @@
         button { padding: 12px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 14px; text-align: left; }
         .btn-json { background: #4fceff; color: #000; text-align: center; }
         .btn-vid-row { display: flex; gap: 5px; overflow-x: auto; padding-bottom: 5px; }
-        .btn-vid { background: #ff4444; color: white; flex-shrink: 0; padding: 8px 15px; font-size: 12px; }
-        .btn-del { background: transparent; border: 1px solid #555; color: #888; margin-top: 10px; width: 100%; text-align: center; }
-        .home-link { display: inline-block; margin-bottom: 20px; color: #888; text-decoration: none; }
+        .btn-vid { background: #ff4444; color: #fff; flex: 1; min-width: 120px; text-align: center; font-size: 11px; white-space: nowrap; }
+        .btn-del { background: #333; color: #aaa; margin-top: 10px; width: 100%; text-align: center; }
+        .back-link { display: inline-block; margin-bottom: 20px; color: #aaa; text-decoration: none; }
+        
+        /* STEALTH */
+        .stealth-toggle { background: transparent; border: 1px solid #333; color: #666; font-size: 12px; padding: 5px 10px; border-radius: 10px; }
+        #curtain { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: black; z-index: 9999; display: none; }
     </style>
 </head>
 <body>
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+        <a href="index.html" class="back-link">← Back to Menu</a>
+        <button class="stealth-toggle" onclick="toggleStealth()">👁️ Stealth</button>
+    </div>
 
-    <a href="index.html" class="home-link">← Back to Recorder</a>
-    <h1>Recorded Sessions</h1>
-    <div id="session-list"></div>
+    <h1>Saved Sessions <span style="font-size:12px; color:#00e676;">V15</span></h1>
+    <div id="list">Loading...</div>
+
+    <div id="curtain" onclick="toggleStealth()"></div>
 
     <script>
-        // *** MUST MATCH RECORDER VERSION V300 ***
-        const DB_NAME = "RunTrackerDB";
-        const DB_VERSION = 300;
+        const DB_VERSION = 106;
+        const list = document.getElementById('list');
+        const request = indexedDB.open("RunTrackerDB", DB_VERSION);
+        
+        request.onsuccess = function(e) {
+            const db = e.target.result;
+            loadSessions(db);
+        };
+        request.onerror = e => list.innerHTML = "DB Error. Refresh.";
 
-        function loadSessions() {
-            const req = indexedDB.open(DB_NAME, DB_VERSION);
-            
-            req.onupgradeneeded = e => {
-                const db = e.target.result;
-                if (!db.objectStoreNames.contains("sessions")) db.createObjectStore("sessions", { keyPath: "id" });
-                if (!db.objectStoreNames.contains("videos")) db.createObjectStore("videos");
-            };
+        function toggleStealth() {
+            const c = document.getElementById('curtain');
+            c.style.display = (c.style.display === 'block') ? 'none' : 'block';
+        }
 
-            req.onsuccess = e => {
-                const db = e.target.result;
-                const tx = db.transaction("sessions", "readonly");
-                const store = tx.objectStore("sessions");
-                const request = store.getAll();
+        function loadSessions(db) {
+            if(!db.objectStoreNames.contains("sessions")) { list.innerHTML = "No sessions found."; return; }
+            const tx = db.transaction("sessions", "readonly");
+            const req = tx.objectStore("sessions").getAll();
 
-                request.onsuccess = () => {
-                    const sessions = request.result;
-                    const list = document.getElementById("session-list");
-                    list.innerHTML = "";
+            req.onsuccess = function() {
+                const runs = req.result;
+                if(runs.length === 0) { list.innerHTML = "No runs saved."; return; }
+                runs.sort((a,b) => new Date(b.date) - new Date(a.date));
+                list.innerHTML = '';
+                
+                runs.forEach(run => {
+                    const date = new Date(run.date).toLocaleString();
+                    const vids = run.videoData || [];
                     
-                    if (sessions.length === 0) list.innerHTML = "<div style='color:#555'>No recordings yet.</div>";
+                    let vidButtons = '';
+                    if(vids.length > 0) {
+                        vidButtons = `<div class="btn-vid-row">`;
+                        vids.forEach((v) => {
+                            const shortName = v.filename.split('_Clip_')[1] || v.filename; 
+                            vidButtons += `<button class="btn-vid" onclick="downloadVideo('${v.filename}')">🎥 ${shortName}</button>`;
+                        });
+                        vidButtons += `</div>`;
+                    } else {
+                        vidButtons = `<div style="color:#666; font-size:12px;">No Videos</div>`;
+                    }
 
-                    sessions.sort((a, b) => b.id - a.id).forEach(s => {
-                        const date = new Date(s.id).toLocaleString();
-                        const dist = calcDistance(s.track_points).toFixed(2);
-                        const dur = (s.duration / 60).toFixed(1);
-                        
-                        const div = document.createElement("div");
-                        div.className = "session-card";
-                        
-                        let vidButtons = "";
-                        if(s.videoData && s.videoData.length > 0) {
-                            vidButtons = `<div class="btn-vid-row">` + 
-                                s.videoData.map((v, i) => `<button class="btn-vid" onclick="downloadVideo('${v.filename}')">🎥 Video ${i+1}</button>`).join('') +
-                                `</div>`;
-                        } else {
-                            vidButtons = `<div style="color:#555; font-size:12px;">No Video</div>`;
-                        }
-
-                        div.innerHTML = `
-                            <div style="font-size:16px; font-weight:bold; margin-bottom:5px; color:white;">${date}</div>
-                            <div class="stats">
-                                <span>⏱ ${dur} min</span>
-                                <span>📏 ${dist} m</span>
-                                <span>📸 ${s.photos.length}</span>
-                            </div>
-                            <div class="btn-group">
-                                <button class="btn-json" onclick="downloadJSON(${s.id})">⬇ Download JSON Data</button>
-                                ${vidButtons}
-                                <button class="btn-del" onclick="deleteRun(${s.id})">Delete Session</button>
-                            </div>
-                        `;
-                        list.appendChild(div);
-                    });
-                };
+                    const div = document.createElement('div');
+                    div.className = 'session-card';
+                    div.innerHTML = `
+                        <div style="color:#aaa; font-size:14px; margin-bottom:10px;">${date}</div>
+                        <div class="stats">
+                            <span>⏱ ${Math.floor(run.duration/60)}:${Math.floor(run.duration%60)}</span>
+                            <span>📸 ${run.photos.length}</span>
+                            <span>💾 ${vids.length} Clips</span>
+                        </div>
+                        <div class="btn-group">
+                            <button class="btn-json" onclick="downloadChunkedJSON(${run.id})">📄 Download JSON</button>
+                            ${vidButtons}
+                            <button class="btn-del" onclick="deleteRun(${run.id})">🗑 Delete Session</button>
+                        </div>
+                    `;
+                    list.appendChild(div);
+                });
             };
         }
 
-        function calcDistance(pts) {
-            if(!pts || pts.length < 2) return 0;
-            let d = 0;
-            for(let i=1; i<pts.length; i++) {
-                const R = 6371e3; 
-                const φ1 = pts[i-1].lat * Math.PI/180, φ2 = pts[i].lat * Math.PI/180;
-                const Δφ = (pts[i].lat-pts[i-1].lat) * Math.PI/180;
-                const Δλ = (pts[i].lng-pts[i-1].lng) * Math.PI/180;
-                const a = Math.sin(Δφ/2)*Math.sin(Δφ/2) + Math.cos(φ1)*Math.cos(φ2) * Math.sin(Δλ/2)*Math.sin(Δλ/2);
-                d += R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-            }
-            return d;
+        function chunkString(str, length) {
+            return str.match(new RegExp('.{1,' + length + '}', 'g'));
         }
 
-        function downloadJSON(id) {
-            const req = indexedDB.open(DB_NAME, DB_VERSION);
+        function downloadChunkedJSON(id) {
+            const req = indexedDB.open("RunTrackerDB", DB_VERSION);
             req.onsuccess = e => {
                 const db = e.target.result;
                 db.transaction("sessions", "readonly").objectStore("sessions").get(id).onsuccess = ev => {
-                    const data = ev.target.result;
-                    const blob = new Blob([JSON.stringify(data, null, 2)], {type : 'application/json'});
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    const safeDate = new Date(data.id).toISOString().replace(/[:.]/g, '-');
-                    a.href = url; a.download = `Run_${safeDate}.json`; a.click();
+                    const rawData = ev.target.result;
+                    const processedPhotos = (rawData.photos || []).map(p => {
+                        const newPhoto = { ...p };
+                        if (newPhoto.src && newPhoto.src.length > 50000) {
+                            newPhoto.src_chunks = chunkString(newPhoto.src, 50000);
+                            delete newPhoto.src;
+                        }
+                        return newPhoto;
+                    });
+                    const exportData = { ...rawData, photos: processedPhotos };
+                    const url = URL.createObjectURL(new Blob([JSON.stringify(exportData,null,2)], {type:'application/json'}));
+                    const a = document.createElement('a'); a.href=url; 
+                    const safeDate = rawData.date.replace(/:/g, '-').split('.')[0].replace('T', '_');
+                    a.download = `Run_${safeDate}.json`; a.click();
                 };
             };
         }
 
         function downloadVideo(filename) {
-            const req = indexedDB.open(DB_NAME, DB_VERSION);
+            const req = indexedDB.open("RunTrackerDB", DB_VERSION);
             req.onsuccess = e => {
                 const db = e.target.result;
                 db.transaction("videos", "readonly").objectStore("videos").get(filename).onsuccess = ev => {
                     const result = ev.target.result;
                     if (!result) return alert("Video file missing from DB!");
-                    const url = URL.createObjectURL(result); // Direct blob result
+                    const url = URL.createObjectURL(result.blob);
                     const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
                 };
             };
@@ -131,20 +138,18 @@
 
         function deleteRun(id) {
             if(!confirm("Delete?")) return;
-            const req = indexedDB.open(DB_NAME, DB_VERSION);
+            const req = indexedDB.open("RunTrackerDB", DB_VERSION);
             req.onsuccess = e => {
                 const db = e.target.result;
                 const tx = db.transaction(["sessions", "videos"], "readwrite");
                 tx.objectStore("sessions").get(id).onsuccess = ev => {
                     const run = ev.target.result;
-                    if(run && run.videoData) run.videoData.forEach(v => tx.objectStore("videos").delete(v.filename));
+                    if(run.videoData) run.videoData.forEach(v => tx.objectStore("videos").delete(v.filename));
                     tx.objectStore("sessions").delete(id);
                 };
                 tx.oncomplete = () => window.location.reload();
             };
         }
-
-        loadSessions();
     </script>
 </body>
 </html>

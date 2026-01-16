@@ -3,283 +3,295 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Run Tracker V300 (Clean Slate)</title>
+    <title>Run Tracker V18 (Insomniac)</title>
     <style>
         body { margin: 0; background: #000; color: white; font-family: sans-serif; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
-        
-        /* 1. VIEWPORT */
-        #view-container { position: relative; flex-grow: 1; background: #111; overflow: hidden; }
+        #video-container { position: relative; flex-grow: 1; background: #111; display: flex; align-items: center; justify-content: center; overflow: hidden; }
         video { width: 100%; height: 100%; object-fit: cover; }
         
-        /* 2. HUD */
-        #overlay-data { position: absolute; top: 20px; left: 20px; z-index: 10; font-size: 18px; font-weight: bold; text-shadow: 2px 2px 4px #000; pointer-events: none; }
-        .val { color: #4fceff; }
-        .rec-active { color: #ff4444; display: none; animation: blink 1s infinite; }
-        @keyframes blink { 50% { opacity: 0.5; } }
+        #overlay-data { position: absolute; top: 10px; left: 10px; z-index: 10; font-family: monospace; font-size: 14px; text-shadow: 1px 1px 2px black; pointer-events: none; }
+        
+        #controls { height: 120px; background: #111; display: grid; grid-template-columns: 1fr 1fr 1fr 0.5fr; gap: 10px; padding: 10px; border-top: 1px solid #333; z-index: 20; }
+        button { border: none; border-radius: 12px; font-weight: bold; font-size: 16px; color: white; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+        .btn-rec { background: #ff4444; }
+        .btn-rec.recording { background: white; color: red; animation: pulse 1s infinite; }
+        .btn-photo { background: #444; }
+        .btn-finish { background: #00e676; color: #003300; }
+        .btn-stealth { background: #222; color: #555; font-size: 20px; }
+        
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+        #status-toast { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.8); padding: 15px 25px; border-radius: 30px; font-size: 18px; pointer-events: none; opacity: 0; transition: opacity 0.3s; z-index: 50; border: 1px solid #555; text-align: center; }
 
-        /* 3. SAVE SHIELD (Blocking) */
-        #save-screen { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 100; display: none; flex-direction: column; align-items: center; justify-content: center; }
-        .spinner { width: 60px; height: 60px; border: 6px solid #333; border-top: 6px solid #00e676; border-radius: 50%; animation: spin 1s linear infinite; }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        #save-status { margin-top: 25px; font-size: 22px; color: #00e676; font-family: monospace; }
-
-        /* 4. CONTROLS */
-        #controls { height: 140px; background: #000; display: flex; align-items: center; justify-content: space-around; padding: 10px; border-top: 1px solid #333; z-index: 20; }
+        /* SLIDER STEALTH UI */
+        #curtain { 
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+            background: black; z-index: 9999; display: none; 
+            touch-action: none;
+        }
+        #curtain-content {
+            position: absolute; bottom: 80px; left: 10%; width: 80%;
+            text-align: center; color: #444;
+        }
         
-        .btn { width: 80px; height: 80px; border-radius: 50%; border: none; font-weight: bold; color: white; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 14px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
-        
-        #btn-rec { background: #333; border: 4px solid #fff; color: #ff4444; width: 90px; height: 90px; font-size: 16px; }
-        #btn-rec.recording { background: #ff4444; color: white; border-color: #ff4444; }
-        
-        #btn-photo { background: #ffd700; color: #000; font-size: 24px; }
-        #btn-back { background: #333; color: #aaa; width: 60px; height: 60px; font-size: 24px; }
-        
-        #toast { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.7); padding: 15px 30px; border-radius: 30px; font-size: 20px; opacity: 0; pointer-events: none; z-index: 50; transition: opacity 0.3s; }
+        .slider-container {
+            width: 100%; height: 60px; background: #222;
+            border-radius: 30px; position: relative;
+            display: flex; align-items: center; padding: 5px; box-sizing: border-box;
+            border: 2px solid #333;
+        }
+        .slider-text {
+            position: absolute; width: 100%; text-align: center;
+            color: #666; font-weight: bold; font-size: 14px;
+            pointer-events: none; text-transform: uppercase; letter-spacing: 2px;
+        }
+        input[type="range"] {
+            -webkit-appearance: none; width: 100%; background: transparent;
+            z-index: 2; cursor: pointer;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none; height: 50px; width: 50px;
+            background: #00e676; border-radius: 50%;
+            box-shadow: 0 0 10px rgba(0,230,118,0.5);
+            margin-top: -2px;
+        }
+        .locked-icon { font-size: 50px; color: #333; margin-bottom: 30px; }
     </style>
 </head>
 <body>
-
-    <div id="view-container">
+    <div id="video-container">
         <video id="preview" autoplay playsinline muted></video>
-        
-        <div id="save-screen">
-            <div class="spinner"></div>
-            <div id="save-status">SAVING...</div>
-        </div>
-
         <div id="overlay-data">
-            <div id="status-line" class="rec-active">● REC <span id="rec-timer">00:00</span></div>
-            <div>SPD: <span id="v-spd" class="val">0.0</span> km/h</div>
-            <div>ALT: <span id="v-alt" class="val">0</span> m</div>
+            <div>GPS: <span id="gps-status">Waiting...</span></div>
+            <div>Hdg: <span id="heading-display">--</span>°</div>
+            <div>Spd: <span id="speed">0.0</span> km/h</div>
+            <div>Rec: <span id="rec-timer">00:00</span></div>
+            <div>Clips: <span id="clip-count">0</span></div>
+            <div style="font-size:10px; color:#555; margin-top:5px;" id="wakelock-status">Sleep: Allowed</div>
         </div>
-        <div id="toast"></div>
+        <div id="status-toast"></div>
     </div>
 
     <div id="controls">
-        <button id="btn-back" class="btn" onclick="location.href='session-manager.html'">↩</button>
-        <button id="btn-rec" class="btn" onclick="toggleRec()">REC</button>
-        <button id="btn-photo" class="btn" onclick="takePhoto()">📷</button>
+        <button class="btn-photo" onclick="takePhoto()">📸</button>
+        <button class="btn-rec" id="btn-rec" onclick="toggleRecording()">🔴 REC</button>
+        <button class="btn-finish" onclick="finishSession()">🏁</button>
+        <button class="btn-stealth" onclick="enterStealth()">👁️</button>
+    </div>
+
+    <div id="curtain">
+        <div style="position:absolute; top:40%; width:100%; text-align:center;">
+            <div class="locked-icon">🔒</div>
+        </div>
+        <div id="curtain-content">
+            <div class="slider-container">
+                <div class="slider-text">Slide to Unlock >></div>
+                <input type="range" id="unlock-slider" min="0" max="100" value="0" step="1">
+            </div>
+        </div>
     </div>
 
     <script>
-        // *** VERSION 300: FRESH START ***
+        const DB_VERSION = 106;
         const DB_NAME = "RunTrackerDB";
-        const DB_VERSION = 300; 
-        
-        let mediaRecorder;
-        let recordedChunks = [];
+
+        let mediaStream, mediaRecorder;
+        let chunks = [];
         let isRecording = false;
-        let sessionID = null;
+        let startTime = 0;
+        let recordTimerInt;
+        let sessionID = Date.now();
+        let sessionDateStr = "";
+        let clipIndex = 1;
         let trackPoints = [];
         let photos = [];
-        let videoMeta = []; 
-        let wakeLock = null; 
-        let timerInt = null;
+        let videoMeta = [];
+        let magneticHeading = 0;
         
-        let curPos = { lat:0, lng:0, spd:0, alt:0, hdg:0, acc:0, time:0 };
-        let lastPos = null;
+        // --- WAKE LOCK VARIABLES (V18) ---
+        let wakeLock = null;
 
-        const video = document.getElementById('preview');
+        // --- SLIDER UNLOCK LOGIC ---
+        const curtain = document.getElementById('curtain');
+        const slider = document.getElementById('unlock-slider');
 
-        // --- 1. SETUP ---
+        function enterStealth() {
+            curtain.style.display = 'block';
+            slider.value = 0;
+        }
+
+        slider.addEventListener('input', function() {
+            if (this.value >= 100) {
+                curtain.style.display = 'none';
+                this.value = 0;
+                if(navigator.vibrate) navigator.vibrate(50);
+            }
+        });
+        slider.addEventListener('touchend', function() { if (this.value < 100) this.value = 0; });
+        slider.addEventListener('mouseup', function() { if (this.value < 100) this.value = 0; });
+
+        // --- APP LOGIC ---
         async function init() {
-            try {
-                // 720p Fix: Prevents black screen on mobile
-                const stream = await navigator.mediaDevices.getUserMedia({ 
-                    video: { facingMode: "environment", width: 1280, height: 720 }, 
-                    audio: true 
-                });
-                video.srcObject = stream;
-                
-                if ("geolocation" in navigator) {
-                    navigator.geolocation.watchPosition(updateGPS, console.error, { enableHighAccuracy: true });
-                }
+            const now = new Date();
+            sessionDateStr = `Run_${now.toISOString().split('T')[0]}_${now.toTimeString().split(' ')[0].replace(/:/g, '-')}`;
 
-                initDB();
-                if('wakeLock' in navigator) try { wakeLock = await navigator.wakeLock.request('screen'); } catch(e){}
+            // 1. Request Wake Lock immediately
+            await requestWakeLock();
 
-            } catch (err) { alert("Camera Init Error: " + err); }
-        }
-
-        function initDB() {
-            const req = indexedDB.open(DB_NAME, DB_VERSION);
-            req.onupgradeneeded = e => {
-                const db = e.target.result;
-                // Force Clean Slate
-                if (db.objectStoreNames.contains("sessions")) db.deleteObjectStore("sessions");
-                if (db.objectStoreNames.contains("videos")) db.deleteObjectStore("videos");
-                
-                db.createObjectStore("sessions", { keyPath: "id" });
-                db.createObjectStore("videos");
-                console.log("DB Rebuilt (V300)");
-            };
-            req.onerror = e => alert("DB Error: " + e.target.error);
-        }
-
-        // --- 2. GPS & ACCEL ---
-        function updateGPS(pos) {
-            const c = pos.coords;
-            const now = Date.now();
-            const t = sessionID ? (now - sessionID) / 1000 : 0;
-            
-            let acc = 0;
-            if (lastPos && c.speed !== null && lastPos.spd !== null) {
-                const dt = (now - lastPos.ts) / 1000;
-                if(dt > 0.1) acc = (c.speed - lastPos.spd) / dt;
+            // 2. Compass
+            if (window.DeviceOrientationEvent) {
+                window.addEventListener('deviceorientation', (e) => {
+                    if (e.webkitCompassHeading) magneticHeading = e.webkitCompassHeading;
+                    else if (e.alpha) magneticHeading = 360 - e.alpha;
+                }, true);
             }
 
-            curPos = {
-                lat: c.latitude, lng: c.longitude,
-                spd: c.speed || 0, alt: c.altitude || 0,
-                hdg: c.heading || 0, acc: acc, time: t
-            };
-            lastPos = { spd: c.speed || 0, ts: now };
-
-            document.getElementById('v-spd').innerText = (curPos.spd * 3.6).toFixed(1);
-            document.getElementById('v-alt').innerText = Math.round(curPos.alt);
-
-            if(isRecording) trackPoints.push({ ...curPos });
-        }
-
-        // --- 3. RECORDING ---
-        function toggleRec() {
-            if(!isRecording) startRec(); else stopRec();
-        }
-
-        function startRec() {
-            sessionID = Date.now();
-            trackPoints = []; photos = []; videoMeta = []; 
-            recordedChunks = [];
-            
             try {
-                // Default codec is safest
-                mediaRecorder = new MediaRecorder(video.srcObject);
-            } catch(e) { alert("Recorder Failed"); return; }
+                mediaStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: true });
+                document.getElementById('preview').srcObject = mediaStream;
 
-            mediaRecorder.ondataavailable = e => {
-                if(e.data.size > 0) recordedChunks.push(e.data);
-            };
+                navigator.geolocation.watchPosition(
+                    pos => {
+                        const { latitude, longitude, speed, altitude, heading } = pos.coords;
+                        
+                        let finalHeading = heading;
+                        if (!heading || isNaN(heading) || (heading === 0 && speed < 1)) {
+                            finalHeading = magneticHeading;
+                        }
 
-            // Stop event triggers save
-            mediaRecorder.onstop = saveEverything;
-            
-            // 1000ms flush prevents black screen
-            mediaRecorder.start(1000); 
-            
-            isRecording = true;
-            updateUI(true);
-            showToast("Recording...");
+                        document.getElementById('gps-status').innerText = `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
+                        document.getElementById('speed').innerText = ((speed || 0) * 3.6).toFixed(1);
+                        document.getElementById('heading-display').innerText = `${Math.round(finalHeading || 0)}`;
+
+                        trackPoints.push({
+                            time: (Date.now() - sessionID) / 1000,
+                            lat: latitude, lng: longitude,
+                            speed: speed, alt: altitude, heading: finalHeading
+                        });
+                    },
+                    err => console.error(err), { enableHighAccuracy: true }
+                );
+            } catch (e) { alert("Error: " + e.message); }
+        }
+        init();
+
+        // --- WAKE LOCK FUNCTION (V18) ---
+        async function requestWakeLock() {
+            try {
+                if ('wakeLock' in navigator) {
+                    wakeLock = await navigator.wakeLock.request('screen');
+                    document.getElementById('wakelock-status').innerText = "Sleep: BLOCKED ⚡";
+                    
+                    // Re-acquire lock if user switches tabs and comes back
+                    document.addEventListener('visibilitychange', async () => {
+                        if (wakeLock !== null && document.visibilityState === 'visible') {
+                            wakeLock = await navigator.wakeLock.request('screen');
+                        }
+                    });
+                } else {
+                    document.getElementById('wakelock-status').innerText = "Sleep: Browser Unsupported";
+                }
+            } catch (err) {
+                console.log(err);
+                document.getElementById('wakelock-status').innerText = "Sleep: Error";
+            }
         }
 
-        function stopRec() {
-            // Block UI immediately
-            document.getElementById('save-screen').style.display = 'flex';
-            document.getElementById('save-status').innerText = "WRITING VIDEO...";
-            
+        function toggleRecording() {
+            if (!isRecording) startRecording();
+            else stopRecording();
+        }
+
+        function startRecording() {
+            chunks = [];
+            try { mediaRecorder = new MediaRecorder(mediaStream, { mimeType: 'video/mp4; codecs=avc1' }); } 
+            catch (e) { mediaRecorder = new MediaRecorder(mediaStream); }
+
+            mediaRecorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+            mediaRecorder.onstop = async () => {
+                const blob = new Blob(chunks, { type: 'video/mp4' });
+                const clipName = `${sessionDateStr}_Clip_${String(clipIndex).padStart(2, '0')}.mp4`;
+                await saveVideoChunkToDB(blob, clipName);
+                videoMeta.push({ filename: clipName, startTime: (startTime - sessionID)/1000, endTime: (Date.now() - sessionID)/1000 });
+                showToast(`✅ Saved: Clip ${clipIndex}`);
+                document.getElementById('clip-count').innerText = videoMeta.length;
+                clipIndex++;
+            };
+            mediaRecorder.start();
+            isRecording = true;
+            startTime = Date.now();
+            updateUI(true);
+        }
+
+        function stopRecording() {
             mediaRecorder.stop();
             isRecording = false;
             updateUI(false);
         }
 
-        // --- 4. SAVING (Sequential & Safe) ---
-        function saveEverything() {
-            if(recordedChunks.length === 0) {
-                window.location.href = 'session-manager.html';
-                return;
-            }
-
-            const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
-            const dateStr = new Date(sessionID).toISOString().split('T')[0];
-            const timeStr = new Date(sessionID).toTimeString().split(' ')[0].replace(/:/g, '-');
-            const fname = `Run_${dateStr}_${timeStr}.mp4`;
-            
-            videoMeta.push({
-                filename: fname,
-                startTime: 0,
-                endTime: (Date.now() - sessionID)/1000
-            });
-
-            const req = indexedDB.open(DB_NAME, DB_VERSION);
-            
-            req.onsuccess = e => {
-                const db = e.target.result;
-                
-                // 1. Save Video
-                const txVid = db.transaction("videos", "readwrite");
-                txVid.objectStore("videos").put(blob, fname);
-                
-                txVid.oncomplete = () => {
-                    document.getElementById('save-status').innerText = "WRITING JSON...";
-                    
-                    // 2. Save JSON
-                    const finalData = {
-                        id: sessionID,
-                        date: new Date(sessionID).toISOString(),
-                        duration: (Date.now() - sessionID)/1000,
-                        track_points: trackPoints,
-                        photos: photos,
-                        videoData: videoMeta
-                    };
-
-                    const txJson = db.transaction("sessions", "readwrite");
-                    txJson.objectStore("sessions").put(finalData);
-                    
-                    txJson.oncomplete = () => {
-                        // 3. Done -> Redirect
-                        document.getElementById('save-status').innerText = "DONE!";
-                        setTimeout(() => window.location.href = 'session-manager.html', 500);
-                    };
-                    
-                    txJson.onerror = () => alert("JSON Save Failed");
-                };
-                
-                txVid.onerror = () => alert("Video Save Failed (Disk Full?)");
-            };
-            
-            req.onerror = e => alert("DB Open Error");
-        }
-
-        // --- EXTRAS ---
         function takePhoto() {
-            const c = document.createElement('canvas');
-            c.width = video.videoWidth; c.height = video.videoHeight;
-            c.getContext('2d').drawImage(video, 0, 0);
-            
-            const d = c.toDataURL('image/jpeg', 0.6);
-            const chunks = [];
-            for(let i=0; i<d.length; i+=50000) chunks.push(d.substring(i, i+50000));
-            
-            photos.push({ time: curPos.time, lat: curPos.lat, lng: curPos.lng, src_chunks: chunks });
-            showToast("Photo Saved");
+            const track = mediaStream.getVideoTracks()[0];
+            const imageCapture = new ImageCapture(track);
+            imageCapture.takePhoto().then(blob => {
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                    const lastPt = trackPoints[trackPoints.length-1] || {lat:0, lng:0, heading: magneticHeading};
+                    photos.push({
+                        time: (Date.now() - sessionID) / 1000,
+                        lat: lastPt.lat, lng: lastPt.lng, heading: lastPt.heading || magneticHeading,
+                        src: reader.result
+                    });
+                    showToast("📸 Photo");
+                };
+                reader.readAsDataURL(blob);
+            });
         }
 
-        function updateUI(active) {
-            const b = document.getElementById('btn-rec');
-            const s = document.getElementById('status-line');
-            if(active) {
-                b.classList.add('recording'); b.innerText = "STOP";
-                s.style.display = 'block';
-                let ticks = 0;
-                timerInt = setInterval(() => {
-                    ticks = Math.floor((Date.now() - sessionID)/1000);
-                    const m = Math.floor(ticks/60).toString().padStart(2,'0');
-                    const sec = (ticks%60).toString().padStart(2,'0');
-                    document.getElementById('rec-timer').innerText = `${m}:${sec}`;
-                }, 1000);
+        function saveVideoChunkToDB(blob, filename) {
+            return new Promise((r) => {
+                const req = indexedDB.open(DB_NAME, DB_VERSION);
+                req.onupgradeneeded = e => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains("sessions")) db.createObjectStore("sessions", { keyPath: "id" });
+                    if (!db.objectStoreNames.contains("videos")) db.createObjectStore("videos", { keyPath: "filename" });
+                };
+                req.onsuccess = e => {
+                    const tx = e.target.result.transaction("videos", "readwrite");
+                    tx.objectStore("videos").put({ filename: filename, blob: blob });
+                    tx.oncomplete = () => r();
+                };
+            });
+        }
+
+        function finishSession() {
+            if (isRecording) stopRecording();
+            if (!confirm("Finish Run?")) return;
+            const finalData = { id: sessionID, date: new Date().toISOString(), duration: (Date.now() - sessionID)/1000, track_points: trackPoints, photos: photos, videoData: videoMeta };
+            const req = indexedDB.open(DB_NAME, DB_VERSION);
+            req.onsuccess = e => {
+                const tx = e.target.result.transaction("sessions", "readwrite");
+                tx.objectStore("sessions").put(finalData);
+                tx.oncomplete = () => window.location.href = 'session-manager.html';
+            };
+        }
+
+        function updateUI(recording) {
+            const btn = document.getElementById('btn-rec');
+            if (recording) {
+                btn.classList.add('recording');
+                btn.innerText = "⏹";
+                let s = 0;
+                recordTimerInt = setInterval(() => { s++; document.getElementById('rec-timer').innerText = `${Math.floor(s/60).toString().padStart(2,'0')}:${(s%60).toString().padStart(2,'0')}`; }, 1000);
             } else {
-                b.classList.remove('recording'); b.innerText = "REC";
-                s.style.display = 'none';
-                clearInterval(timerInt);
+                btn.classList.remove('recording');
+                btn.innerText = "🔴 REC";
+                clearInterval(recordTimerInt);
             }
         }
 
-        function showToast(m) {
-            const t = document.getElementById('toast');
-            t.innerText = m; t.style.opacity = 1;
+        function showToast(msg) {
+            const t = document.getElementById('status-toast'); t.innerText = msg; t.style.opacity = 1;
             setTimeout(() => t.style.opacity = 0, 2000);
         }
-
-        init();
     </script>
 </body>
 </html>
