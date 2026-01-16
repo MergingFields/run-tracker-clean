@@ -3,11 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Run Tracker Hybrid V2</title>
+    <title>Run Tracker Hybrid V4 (Curtain)</title>
     <style>
         body { margin: 0; background: #000; color: white; font-family: sans-serif; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
         
-        /* VIDEO PREVIEW */
+        /* VIDEO PREVIEW AREA */
         #video-container { position: relative; flex-grow: 1; background: #111; display: flex; align-items: center; justify-content: center; overflow: hidden; }
         video { width: 100%; height: 100%; object-fit: cover; }
         
@@ -15,37 +15,57 @@
         #overlay-data { position: absolute; top: 10px; left: 10px; z-index: 10; font-family: monospace; font-size: 14px; text-shadow: 1px 1px 2px black; pointer-events: none; }
         #data-counters { position: absolute; bottom: 140px; left: 10px; color: #4fceff; font-family: monospace; font-size: 14px; pointer-events: none; z-index: 20; text-shadow: 1px 1px 2px black; }
         
-        /* CONTROLS AREA */
-        #controls { height: 120px; background: #111; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; padding: 10px; border-top: 1px solid #333; z-index: 20; }
+        /* TOP CONTROLS (Back Button) */
+        #top-bar { position: absolute; top: 10px; right: 10px; z-index: 30; }
+        .btn-mini { background: rgba(0,0,0,0.5); border: 1px solid #555; color: #ccc; padding: 8px 12px; font-size: 12px; border-radius: 20px; text-decoration: none; display: inline-block; backdrop-filter: blur(4px); }
+
+        /* MAIN CONTROLS GRID */
+        #controls { height: 120px; background: #111; display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; padding: 10px; border-top: 1px solid #333; z-index: 20; }
         
-        button { border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; color: #fff; background: #333; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+        button { border: none; border-radius: 8px; font-size: 14px; font-weight: bold; cursor: pointer; color: #fff; background: #333; display: flex; flex-direction: column; align-items: center; justify-content: center; }
         button:active { background: #555; }
         
-        /* The Video Toggle Button */
         #btn-video { background: #444; border: 2px solid #555; color: #ff4444; }
         #btn-video.recording { background: #ff4444; color: white; }
-        
-        /* The Photo Button */
         #btn-photo { background: #ffd700; color: #000; }
-        
-        /* The Finish Run Button */
         #btn-finish { background: #00e676; color: #000; }
+        #btn-curtain { background: #222; color: #888; border: 1px solid #444; }
 
+        /* CURTAIN OVERLAY (Hidden by default) */
+        #curtain-overlay { 
+            display: none; 
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+            background: black; z-index: 99999; 
+            flex-direction: column; align-items: center; justify-content: center;
+        }
+        #curtain-hint { color: #333; font-family: sans-serif; font-size: 14px; margin-top: 20px; user-select: none; }
+        
         /* TOAST */
         #status-toast { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.8); color: white; padding: 15px 25px; border-radius: 8px; font-size: 18px; pointer-events: none; opacity: 0; transition: opacity 0.3s; z-index: 100; }
     </style>
 </head>
 <body>
 
-<div id="start-screen" style="position:fixed; top:0; left:0; width:100%; height:100%; background:#000; z-index:9999; display:flex; align-items:center; justify-content:center; flex-direction:column;">
+    <div id="start-screen" style="position:fixed; top:0; left:0; width:100%; height:100%; background:#000; z-index:9999; display:flex; align-items:center; justify-content:center; flex-direction:column;">
         <button onclick="startRun()" style="padding:20px 40px; font-size:20px; background:#00e676; color:#000; border:none; border-radius:50px; font-weight:bold;">
             🏃‍♂️ START RUN
         </button>
-        <p id="db-status" style="color:#ff4444; margin-top:20px; font-family:monospace; font-weight:bold;">Waiting for DB...</p>
+        <p id="db-status" style="color:#666; margin-top:20px; font-family:monospace;">Connecting to DB...</p>
+        
+        <a href="index.html" style="margin-top:40px; color:#666; text-decoration:none;">← Back to Home</a>
+    </div>
+
+    <div id="curtain-overlay" onclick="handleCurtainTap()">
+        <div style="font-size: 40px;">🔒</div>
+        <div id="curtain-hint">Double-tap to Unlock</div>
     </div>
 
     <div id="video-container">
         <video id="preview" autoplay playsinline muted></video>
+        
+        <div id="top-bar">
+            <a href="index.html" class="btn-mini">🏠 Home</a>
+        </div>
         
         <div id="overlay-data">
             SPD: <span id="disp-speed">0.0</span> km/h<br>
@@ -65,17 +85,18 @@
         <button id="btn-photo" onclick="takePhoto()">📸 IMG</button>
         <button id="btn-video" onclick="toggleVideo()">🔴 VIDEO</button>
         <button id="btn-finish" onclick="finishRun()">🏁 FINISH</button>
+        <button id="btn-curtain" onclick="toggleCurtain()">👻 HIDE</button>
     </div>
 
-<script>
-        // --- CRITICAL CONFIG ---
+    <script>
+        // --- CONFIGURATION ---
         const DB_NAME = "RunTrackerDB";
-        const DB_VERSION = 99; // MUST MATCH SESSION MANAGER
+        const DB_VERSION = 99; 
         const AUTO_SPLIT_MS = 60000; 
         const CHUNK_SIZE = 50000;
         
         // --- STATE ---
-        let db = null; // Global DB Reference
+        let db = null;
         let isRunActive = false;
         let sessionStartTimestamp = 0; 
         
@@ -92,55 +113,62 @@
         let photos = [];      
         let videoMeta = [];   
         
-        // Timers
+        // Timers & Curtain State
         let runTimerInt = null;
         let wakeLock = null; 
+        let lastTapTime = 0; // For double-tap detection
 
         // Physics
-        let liveData = { lat: 0, lng: 0, alt: 0, speed: 0, accel: 0, heading: 0, timestamp: 0 };
+        let liveData = { lat: 0, lng: 0, alt: 0, speed: 0, heading: 0 };
         let magneticHeading = 0; 
 
-        // --- 1. IMMEDIATE DB INIT (To Prove Connection) ---
+        // --- 1. INIT DB ---
         function initDB() {
-            const statusEl = document.getElementById('db-status');
-            console.log("Opening DB...");
-            
             const req = indexedDB.open(DB_NAME, DB_VERSION);
-
-            req.onerror = (event) => {
-                console.error("DB Error:", event);
-                statusEl.innerText = "❌ DB ERROR: " + event.target.error;
-                alert("Database Version Conflict! Please delete the app/website data in settings.");
+            req.onerror = e => {
+                document.getElementById('db-status').innerText = "❌ DB ERROR: " + e.target.error;
+                alert("Database Version Conflict! Please clear site data.");
             };
-
-            req.onblocked = () => {
-                 statusEl.innerText = "❌ DB BLOCKED. Close other tabs.";
-            };
-
-            req.onupgradeneeded = (event) => {
-                console.log("Upgrading DB...");
-                db = event.target.result;
+            req.onupgradeneeded = e => {
+                db = e.target.result;
                 if (!db.objectStoreNames.contains("sessions")) db.createObjectStore("sessions", { keyPath: "id" });
                 if (!db.objectStoreNames.contains("videos")) db.createObjectStore("videos"); 
             };
-
-            req.onsuccess = (event) => {
-                db = event.target.result;
-                console.log("DB Success!");
-                statusEl.innerText = "✅ DB Ready (v99)";
-                statusEl.style.color = "#00e676";
+            req.onsuccess = e => {
+                db = e.target.result;
+                document.getElementById('db-status').innerText = "✅ DB Connected (v99)";
+                document.getElementById('db-status').style.color = "#00e676";
             };
         }
-        
-        // Call immediately on load
         initDB();
 
+        // --- 2. CURTAIN MODE LOGIC ---
+        function toggleCurtain() {
+            const c = document.getElementById('curtain-overlay');
+            c.style.display = 'flex'; // Show curtain
+            showToast("Stealth Mode On");
+        }
 
-        // --- 2. RUN CONTROLS ---
+        function handleCurtainTap() {
+            const now = Date.now();
+            // Detect Double Tap (within 400ms)
+            if (now - lastTapTime < 400) {
+                const c = document.getElementById('curtain-overlay');
+                c.style.display = 'none'; // Hide curtain
+                showToast("Unlocked");
+            } else {
+                // Just a single tap hint
+                const h = document.getElementById('curtain-hint');
+                h.style.color = "#666";
+                setTimeout(() => h.style.color = "#333", 500);
+            }
+            lastTapTime = now;
+        }
+
+        // --- 3. RUN CONTROLS ---
         async function startRun() {
-            if (!db) return alert("Database not ready yet!");
+            if (!db) return alert("Database not ready!");
             
-            // Camera
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({ 
                     video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 } }, 
@@ -148,7 +176,6 @@
                 });
                 startHardware(stream);
             } catch (err) {
-                // Fallback
                 try {
                     const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: true });
                     startHardware(stream);
@@ -180,11 +207,11 @@
 
         function finishRun() {
             if (isRecordingVideo) return alert("Stop video first!");
-            if (!confirm("Save Run?")) return;
+            if (!confirm("Finish & Save Run?")) return;
 
             const finalData = {
                 id: sessionStartTimestamp,
-                start_time_abs: new Date(sessionStartTimestamp).toISOString(),
+                date: new Date(sessionStartTimestamp).toISOString(),
                 duration: (Date.now() - sessionStartTimestamp)/1000,
                 track_points: trackPoints,
                 photos: photos,
@@ -201,7 +228,7 @@
             tx.onerror = (e) => alert("Save Failed: " + e.target.error);
         }
 
-        // --- 3. VIDEO CONTROLS ---
+        // --- 4. VIDEO CONTROLS ---
         function setupMediaRecorder(stream) {
             let options = { mimeType: 'video/mp4' }; 
             if (!MediaRecorder.isTypeSupported('video/mp4')) options = { mimeType: 'video/webm' };
@@ -224,7 +251,6 @@
                 document.getElementById('btn-video').innerText = "⬛ STOP VIDEO";
                 document.getElementById('btn-video').classList.add('recording');
                 
-                // Auto-split logic
                 clearInterval(splitTimerInt);
                 splitTimerInt = setInterval(() => { if(isRecordingVideo) mediaRecorder.stop(); }, AUTO_SPLIT_MS);
                 
@@ -251,24 +277,23 @@
 
             tx.oncomplete = () => {
                 console.log("Video Saved:", filename);
+                
                 videoMeta.push({
                     filename: filename,
-                    start_offset: currentVideoStartOffset,
-                    end_offset: endOffset,
+                    startTime: currentVideoStartOffset,
+                    endTime: endOffset,
                     duration: endOffset - currentVideoStartOffset
                 });
+                
                 document.getElementById('cnt-videos').innerText = videoMeta.length;
                 videoSegmentCounter++;
                 currentVideoStartOffset = endOffset;
                 
-                // If auto-split triggered this, restart immediately
                 if (isRecordingVideo) mediaRecorder.start();
             };
-            
-            tx.onerror = (e) => console.error("Video Save Failed:", e);
         }
 
-        // --- 4. PHOTO & SENSOR ---
+        // --- 5. PHOTOS ---
         function takePhoto() {
             if (!isRunActive) return;
             const v = document.getElementById('preview');
@@ -281,37 +306,61 @@
             for(let i=0; i < fullBase64.length; i += CHUNK_SIZE) chunks.push(fullBase64.substring(i, i + CHUNK_SIZE));
             
             photos.push({
-                time_offset: (Date.now() - sessionStartTimestamp) / 1000,
-                src: chunks,
-                coords: { lat: liveData.lat, lng: liveData.lng }
+                time: (Date.now() - sessionStartTimestamp) / 1000,
+                lat: liveData.lat,
+                lng: liveData.lng,
+                alt: liveData.alt,
+                heading: liveData.heading,
+                speed: liveData.speed,
+                src_chunks: chunks 
             });
+            
             document.getElementById('cnt-photos').innerText = photos.length;
+            showToast("Photo Saved");
         }
 
+        // --- 6. GPS ---
         function setupGPS() {
-            if ("geolocation" in navigator) navigator.geolocation.watchPosition(updatePhysics, console.error, { enableHighAccuracy: true });
+            if ("geolocation" in navigator) {
+                if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+                    DeviceOrientationEvent.requestPermission()
+                        .then(r => { if(r==='granted') window.addEventListener('deviceorientation', e => {
+                            if(e.webkitCompassHeading) magneticHeading = e.webkitCompassHeading;
+                            else if (e.alpha) magneticHeading = 360 - e.alpha;
+                        })})
+                        .catch(console.error);
+                } else {
+                     window.addEventListener('deviceorientation', e => {
+                        if(e.webkitCompassHeading) magneticHeading = e.webkitCompassHeading;
+                        else if (e.alpha) magneticHeading = 360 - e.alpha;
+                    });
+                }
+                
+                navigator.geolocation.watchPosition(updatePhysics, console.error, { enableHighAccuracy: true });
+            }
         }
 
         function updatePhysics(pos) {
             const now = Date.now();
             const crd = pos.coords;
-            const dt = (now - liveData.timestamp) / 1000;
             const newSpeed = crd.speed || 0;
-            let newAccel = 0;
-            if (dt > 0 && dt < 5) newAccel = (newSpeed - liveData.speed) / dt;
+            
+            let bestHeading = crd.heading;
+            if (!bestHeading || isNaN(bestHeading) || newSpeed < 0.5) bestHeading = magneticHeading;
 
-            liveData = { lat: crd.latitude, lng: crd.longitude, alt: crd.altitude||0, speed: newSpeed, accel: newAccel, timestamp: now };
+            liveData = { lat: crd.latitude, lng: crd.longitude, alt: crd.altitude||0, speed: newSpeed, heading: bestHeading };
             
             document.getElementById('disp-speed').innerText = (liveData.speed * 3.6).toFixed(1);
             document.getElementById('disp-alt').innerText = Math.round(liveData.alt);
 
             if (isRunActive) {
                 trackPoints.push({
-                    time_offset: (now - sessionStartTimestamp) / 1000,
-                    coords: { lat: liveData.lat, lng: liveData.lng },
+                    time: (now - sessionStartTimestamp) / 1000,
+                    lat: liveData.lat,
+                    lng: liveData.lng,
+                    alt: liveData.alt,
                     speed: liveData.speed,
-                    acceleration: liveData.accel,
-                    altitude: liveData.alt
+                    heading: liveData.heading
                 });
             }
         }
@@ -323,6 +372,5 @@
             setTimeout(() => t.style.opacity = 0, 2000);
         }
     </script>
-    
 </body>
 </html>
