@@ -65,7 +65,8 @@
         // --- CONFIG ---
         const DB_NAME = "RunTrackerDB";
         const DB_VERSION = 2;
-        const SEGMENT_DURATION_MS = 60000; // Chunk video every 60s
+        const SEGMENT_DURATION_MS = 60000; // 60 Seconds per video file
+        const CHUNK_SIZE = 50000;          // Size of image string chunks
         
         // --- STATE ---
         let mediaRecorder;
@@ -73,57 +74,48 @@
         let isRecording = false;
         let isAutoSplitting = false;
         
-        // Session Data
-        let sessionStartTimestamp = 0; // The absolute start time (Date.now())
-        let trackPoints = []; // The GPS Stream
-        let photos = [];      // The Photo Array
-        let videoMeta = [];   // The Video Array (Links to Blobs)
+        // Session Data Containers
+        let sessionStartTimestamp = 0; 
+        let trackPoints = []; 
+        let photos = [];      
+        let videoMeta = [];   
         
-        // Timers & Counters
+        // Timers & Sync
         let currentClipStartOffset = 0;
         let segmentCounter = 1;
         let recordTimerInt = null;
         let splitTimerInt = null;
         let wakeLock = null; 
 
-        // SENSOR STATE (The "Live" Data)
+        // LIVE SENSOR DATA (Physics Engine)
         let liveData = {
             lat: 0, lng: 0,
             alt: 0,
-            speed: 0,      // m/s
-            heading: 0,    // degrees (0-360)
-            accel: 0,      // m/s² (Calculated)
-            timestamp: 0   // Last update time
+            speed: 0,      
+            heading: 0,    
+            accel: 0,      
+            timestamp: 0   
         };
-        
-        // Compass Fallback
         let magneticHeading = 0; 
 
-        // --- 1. SYSTEM STARTUP (Permissions & Camera) ---
+        // --- 1. SYSTEM STARTUP ---
         async function startSystem() {
             const log = document.getElementById('status-log');
             
-            // A. Request iOS DeviceOrientation (Compass) Permission
+            // Compass Permission (iOS)
             if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
                 try {
                     const response = await DeviceOrientationEvent.requestPermission();
-                    if (response === 'granted') {
-                        window.addEventListener('deviceorientation', handleOrientation);
-                        log.innerText = "Compass: Granted";
-                    } else {
-                        log.innerText = "Compass: Denied (Using GPS only)";
-                    }
+                    if (response === 'granted') window.addEventListener('deviceorientation', handleOrientation);
                 } catch (e) { console.error(e); }
             } else {
-                // Non-iOS or older devices
                 window.addEventListener('deviceorientation', handleOrientation);
             }
 
-            // B. Start Camera
+            // Camera Start
             try {
                 document.getElementById('start-screen').style.display = 'none';
-                
-                // Try High-Res
+                // Request 1080p @ 60fps
                 const stream = await navigator.mediaDevices.getUserMedia({ 
                     video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 } }, 
                     audio: true 
@@ -132,6 +124,7 @@
             } catch (err) {
                 console.warn("High-Res failed", err);
                 try {
+                    // Fallback
                     const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: true });
                     onStreamSuccess(stream, "Standard Res");
                 } catch (err2) {
@@ -142,12 +135,8 @@
         }
 
         function handleOrientation(event) {
-            // iOS uses webkitCompassHeading, Android uses alpha
-            if(event.webkitCompassHeading) {
-                magneticHeading = event.webkitCompassHeading;
-            } else if (event.alpha) {
-                magneticHeading = 360 - event.alpha;
-            }
+            if(event.webkitCompassHeading) magneticHeading = event.webkitCompassHeading;
+            else if (event.alpha) magneticHeading = 360 - event.alpha;
         }
 
         function onStreamSuccess(stream, mode) {
@@ -157,67 +146,49 @@
             videoEl.setAttribute('muted', '');
             videoEl.play();
             
-            showToast("System Ready: " + mode);
             setupRecorder(stream);
             setupGPS();
             initDB();
+            showToast("System Ready: " + mode);
         }
 
-        // --- 2. GPS & DATA FUSION ---
+        // --- 2. PHYSICS ENGINE (GPS + Math) ---
         function setupGPS() {
             if ("geolocation" in navigator) {
-                navigator.geolocation.watchPosition(
-                    updatePhysicsEngine, 
-                    err => console.error(err), 
-                    { enableHighAccuracy: true, maximumAge: 0 }
-                );
+                navigator.geolocation.watchPosition(updatePhysicsEngine, console.error, { enableHighAccuracy: true, maximumAge: 0 });
             }
         }
 
         function updatePhysicsEngine(pos) {
             const now = Date.now();
             const crd = pos.coords;
+            const dt = (now - liveData.timestamp) / 1000; // Delta time in seconds
             
-            // 1. Calculate Time Delta (dt) in seconds
-            const dt = (now - liveData.timestamp) / 1000;
-            
-            // 2. Get Speed (GPS provides m/s)
             const newSpeed = crd.speed || 0;
             
-            // 3. Calculate Acceleration (dv / dt)
-            // If dt is huge (first point), accel is 0.
+            // Calc Acceleration (m/s²)
             let newAccel = 0;
-            if (dt > 0 && dt < 5) { // Only calc if updates are frequent (<5s)
-                newAccel = (newSpeed - liveData.speed) / dt;
-            }
+            if (dt > 0 && dt < 5) newAccel = (newSpeed - liveData.speed) / dt;
 
-            // 4. Determine Heading (GPS vs Compass)
-            // GPS heading is only accurate if we are moving (> 0.5 m/s)
+            // Calc Heading (GPS vs Compass)
             let bestHeading = crd.heading;
-            if (!bestHeading || isNaN(bestHeading) || newSpeed < 0.5) {
-                bestHeading = magneticHeading; // Fallback to Magnet
-            }
+            if (!bestHeading || isNaN(bestHeading) || newSpeed < 0.5) bestHeading = magneticHeading;
 
-            // 5. Update Global State
             liveData = {
-                lat: crd.latitude,
-                lng: crd.longitude,
-                alt: crd.altitude || 0,
-                speed: newSpeed,
-                accel: newAccel, 
-                heading: bestHeading || 0,
+                lat: crd.latitude, lng: crd.longitude, alt: crd.altitude || 0,
+                speed: newSpeed, accel: newAccel, heading: bestHeading || 0,
                 timestamp: now
             };
 
-            // 6. Update UI
+            // Update UI
             document.getElementById('disp-speed').innerText = (liveData.speed * 3.6).toFixed(1);
             document.getElementById('disp-alt').innerText = Math.round(liveData.alt);
 
-            // 7. RECORD IF ACTIVE
+            // RECORD DATA POINT
             if (isRecording) {
                 trackPoints.push({
-                    time_offset: (now - sessionStartTimestamp) / 1000, // Seconds from start
-                    abs_time: new Date(now).toISOString(),             // Absolute ISO time
+                    time_offset: (now - sessionStartTimestamp) / 1000,
+                    timestamp: new Date(now).toISOString(),
                     coords: { lat: liveData.lat, lng: liveData.lng },
                     speed: liveData.speed,
                     acceleration: liveData.accel,
@@ -227,7 +198,7 @@
             }
         }
 
-        // --- 3. DATABASE SETUP ---
+        // --- 3. DATABASE ---
         function initDB() {
             const req = indexedDB.open(DB_NAME, DB_VERSION);
             req.onupgradeneeded = e => {
@@ -237,9 +208,8 @@
             };
         }
 
-        // --- 4. RECORDING CONTROLS ---
+        // --- 4. RECORDING LOGIC ---
         function setupRecorder(stream) {
-            // Prefer MP4
             let options = { mimeType: 'video/webm;codecs=vp9' };
             if (MediaRecorder.isTypeSupported('video/mp4; codecs=avc1,mp4a.40.2')) options = { mimeType: 'video/mp4; codecs=avc1,mp4a.40.2' };
             else if (MediaRecorder.isTypeSupported('video/mp4')) options = { mimeType: 'video/mp4' };
@@ -257,14 +227,8 @@
 
         function startRecording() {
             sessionStartTimestamp = Date.now();
-            
-            // Reset Arrays
-            trackPoints = []; 
-            photos = []; 
-            videoMeta = [];
-            recordedChunks = []; 
-            segmentCounter = 1; 
-            currentClipStartOffset = 0;
+            trackPoints = []; photos = []; videoMeta = [];
+            recordedChunks = []; segmentCounter = 1; currentClipStartOffset = 0;
             
             mediaRecorder.start();
             isRecording = true;
@@ -274,7 +238,7 @@
             requestWakeLock();
             showToast("Recording Started");
 
-            // Auto-Split Timer (Save multiple videos)
+            // Auto-Split Timer
             splitTimerInt = setInterval(() => {
                 if(isRecording) {
                     isAutoSplitting = true;
@@ -293,12 +257,13 @@
             showToast("Finalizing..."); 
         }
 
-        // --- 5. DATA SAVING (The Linker) ---
+        // --- 5. DATA SAVING HANDLERS ---
+        
+        // A. Video Handler (Split logic)
         function handleStopOrSplit() {
             const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
-            recordedChunks = []; // RAM cleared
+            recordedChunks = []; // Clear RAM
 
-            // Create Filename
             const dateStr = new Date(sessionStartTimestamp).toISOString().split('T')[0];
             const timeStr = new Date(sessionStartTimestamp).toTimeString().split(' ')[0].replace(/:/g, '-');
             const filename = `Run_${dateStr}_${timeStr}_Clip_${String(segmentCounter).padStart(2, '0')}.mp4`;
@@ -306,27 +271,22 @@
             const now = Date.now();
             const endOffset = (now - sessionStartTimestamp) / 1000;
             
-            // SAVE VIDEO TO DB
+            // Save to DB
             const req = indexedDB.open(DB_NAME, DB_VERSION);
             req.onsuccess = e => {
                 const db = e.target.result;
                 const tx = db.transaction("videos", "readwrite");
-                
-                // 1. Save the Blob
                 tx.objectStore("videos").put(blob, filename);
 
                 tx.oncomplete = () => {
-                    console.log("Saved Video Segment:", filename);
+                    console.log("Saved Video:", filename);
                     
-                    // 2. Link Metadata in JSON Array
-                    // This is how we support "Multiple Videos" per "Single Run"
+                    // PUSH VIDEO METADATA TO ARRAY
                     videoMeta.push({
-                        filename: filename,            // The Key to find the Blob
-                        start_offset: currentClipStartOffset,
-                        end_offset: endOffset,
-                        // Snapshot of Physics at start of video segment
-                        start_coords: { lat: liveData.lat, lng: liveData.lng },
-                        start_heading: liveData.heading
+                        filename: filename,
+                        start_time: currentClipStartOffset,
+                        end_time: endOffset,
+                        duration: endOffset - currentClipStartOffset
                     });
 
                     currentClipStartOffset = endOffset;
@@ -342,23 +302,62 @@
             };
         }
 
+        // B. Photo Handler (Chunking Logic)
+        function takePhoto() {
+            const v = document.getElementById('preview');
+            const c = document.createElement('canvas');
+            c.width = v.videoWidth || 1280; c.height = v.videoHeight || 720;
+            c.getContext('2d').drawImage(v,0,0,c.width,c.height);
+            
+            // 1. Get Base64 String
+            const fullBase64 = c.toDataURL('image/jpeg', 0.8);
+            
+            // 2. Chunk it (Split into array)
+            const chunks = [];
+            for(let i=0; i < fullBase64.length; i += CHUNK_SIZE) {
+                chunks.push(fullBase64.substring(i, i + CHUNK_SIZE));
+            }
+            
+            // 3. Save with Physics Data
+            photos.push({
+                time_offset: (Date.now() - sessionStartTimestamp) / 1000,
+                timestamp: new Date().toISOString(),
+                src: chunks, // <--- SAVED AS ARRAY
+                coords: { lat: liveData.lat, lng: liveData.lng },
+                speed: liveData.speed,
+                acceleration: liveData.accel,
+                heading: liveData.heading,
+                altitude: liveData.alt
+            });
+            showToast("Photo Captured");
+        }
+        
+        function addMarker() {
+            photos.push({
+                time_offset: (Date.now() - sessionStartTimestamp) / 1000,
+                timestamp: new Date().toISOString(),
+                src: [], // Empty array for marker
+                type: 'marker',
+                coords: { lat: liveData.lat, lng: liveData.lng },
+                speed: liveData.speed,
+                acceleration: liveData.accel,
+                heading: liveData.heading,
+                altitude: liveData.alt
+            });
+            showToast("Marker Set");
+        }
+
+        // C. Final Session Save
         function saveSessionJSON() {
             if (!confirm("Run Finished. Save Data?")) return;
 
-            // THE MASTER RECORD
             const finalData = {
                 id: sessionStartTimestamp,
                 start_time_abs: new Date(sessionStartTimestamp).toISOString(),
                 duration: (Date.now() - sessionStartTimestamp)/1000,
-                
-                // 1. The GPS Stream (With Acceleration & Heading)
                 track_points: trackPoints,
-                
-                // 2. The Photo Stream (With Acceleration & Heading)
-                photos: photos,
-                
-                // 3. The Video List (Links to the Blobs)
-                videoData: videoMeta 
+                photos: photos,    // Contains 'src' (chunked)
+                videoData: videoMeta // Contains start/stop offsets
             };
 
             const req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -372,46 +371,7 @@
             };
         }
 
-        // --- 6. UTILITIES ---
-        function takePhoto() {
-            const v = document.getElementById('preview');
-            const c = document.createElement('canvas');
-            c.width = v.videoWidth || 1280; c.height = v.videoHeight || 720;
-            c.getContext('2d').drawImage(v,0,0,c.width,c.height);
-            const d = c.toDataURL('image/jpeg', 0.8);
-            
-            // Chunking Base64
-            const ch = []; for(let i=0;i<d.length;i+=50000) ch.push(d.substring(i,i+50000));
-            
-            // Save with FULL Physics Context
-            photos.push({
-                time_offset: (Date.now() - sessionStartTimestamp) / 1000,
-                abs_time: new Date().toISOString(),
-                src_chunks: ch,
-                coords: { lat: liveData.lat, lng: liveData.lng },
-                speed: liveData.speed,
-                acceleration: liveData.accel,
-                heading: liveData.heading,
-                altitude: liveData.alt
-            });
-            showToast("Photo Captured");
-        }
-
-        function addMarker() {
-            photos.push({
-                time_offset: (Date.now() - sessionStartTimestamp) / 1000,
-                abs_time: new Date().toISOString(),
-                src_chunks: [], // Empty
-                type: 'marker',
-                coords: { lat: liveData.lat, lng: liveData.lng },
-                speed: liveData.speed,
-                acceleration: liveData.accel,
-                heading: liveData.heading,
-                altitude: liveData.alt
-            });
-            showToast("Marker Set");
-        }
-
+        // --- 6. UTILS ---
         function requestWakeLock() { if ('wakeLock' in navigator) navigator.wakeLock.request('screen').catch(e=>{}); }
         function releaseWakeLock() { if (wakeLock) wakeLock.release(); }
         
@@ -436,5 +396,5 @@
             setTimeout(() => t.style.opacity = 0, 2000);
         }
     </script>
-</body>
+    </body>
 </html>
