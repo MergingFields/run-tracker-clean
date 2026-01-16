@@ -52,23 +52,26 @@
         <button id="btn-back" onclick="window.location.href='session-manager.html'">↩</button>
     </div>
 
-    <script>
+<script>
         // --- CONFIG ---
         const DB_NAME = "RunTrackerDB";
         const DB_VERSION = 2;
+        const SEGMENT_DURATION_MS = 60000; // Split video every 60 seconds
         
         // --- STATE ---
         let mediaRecorder;
         let recordedChunks = [];
         let isRecording = false;
+        let isAutoSplitting = false; // Flag to track auto-splits
         let sessionID = null;
         let trackPoints = [];
         let photos = [];
-        let videoMeta = []; // { filename, startTime, endTime }
+        let videoMeta = []; 
         let currentClipStart = 0;
         let segmentCounter = 1;
         let recordTimerInt = null;
-        let wakeLock = null; // NEW: Screen Wake Lock
+        let splitTimerInt = null;
+        let wakeLock = null; 
 
         // GPS State
         let currentPos = { lat: 0, lng: 0, speed: 0, alt: 0, heading: 0, time: 0 };
@@ -77,15 +80,24 @@
         // --- INIT ---
         async function init() {
             try {
-                // 1. Setup Camera
+                // 1. Setup Camera (Requested High Res & 60 FPS)
                 const stream = await navigator.mediaDevices.getUserMedia({ 
-                    video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } }, 
+                    video: { 
+                        facingMode: "environment", 
+                        width: { ideal: 1920 }, // Ask for 1080p
+                        height: { ideal: 1080 },
+                        frameRate: { ideal: 60 } // Ask for 60fps
+                    }, 
                     audio: true 
                 });
+                
+                const vidTrack = stream.getVideoTracks()[0];
+                const settings = vidTrack.getSettings();
+                console.log(`Camera initialized: ${settings.width}x${settings.height} @ ${settings.frameRate}fps`);
+
                 document.getElementById('preview').srcObject = stream;
                 
                 // 2. Setup Recorder
-                // Try to use MP4 (better for iPhone), fall back to WebM
                 let options = { mimeType: 'video/webm;codecs=vp9' };
                 if (MediaRecorder.isTypeSupported('video/mp4; codecs=avc1,mp4a.40.2')) {
                     options = { mimeType: 'video/mp4; codecs=avc1,mp4a.40.2' };
@@ -99,7 +111,8 @@
                     if (e.data.size > 0) recordedChunks.push(e.data);
                 };
 
-                mediaRecorder.onstop = saveVideoSegment;
+                // When recorder stops, we save whatever is in the buffer
+                mediaRecorder.onstop = handleStopOrSplit;
 
                 // 3. Setup GPS
                 if ("geolocation" in navigator) {
@@ -113,7 +126,7 @@
                 req.onupgradeneeded = e => {
                     const db = e.target.result;
                     if (!db.objectStoreNames.contains("sessions")) db.createObjectStore("sessions", { keyPath: "id" });
-                    if (!db.objectStoreNames.contains("videos")) db.createObjectStore("videos"); // Key: filename, Val: Blob
+                    if (!db.objectStoreNames.contains("videos")) db.createObjectStore("videos"); 
                 };
 
             } catch (err) {
@@ -121,39 +134,31 @@
             }
         }
 
-        // --- WAKE LOCK (THE FIX) ---
+        // --- WAKE LOCK ---
         async function requestWakeLock() {
             if ('wakeLock' in navigator) {
                 try {
                     wakeLock = await navigator.wakeLock.request('screen');
-                    console.log('Screen Wake Lock active');
-                } catch (err) {
-                    console.error(`${err.name}, ${err.message}`);
-                }
+                } catch (err) { console.error(err); }
             }
         }
-
         function releaseWakeLock() {
-            if (wakeLock !== null) {
-                wakeLock.release().then(() => { wakeLock = null; });
-            }
+            if (wakeLock !== null) wakeLock.release().then(() => { wakeLock = null; });
         }
 
         // --- GPS LOOP ---
         function updateGPS(pos) {
             const crd = pos.coords;
-            // Capture Altitude!
             currentPos = {
                 lat: crd.latitude,
                 lng: crd.longitude,
                 speed: crd.speed,
-                alt: crd.altitude, // <--- SAVED
+                alt: crd.altitude,
                 heading: crd.heading,
-                time: (Date.now() - sessionID) / 1000 // Run time in seconds
+                time: (Date.now() - sessionID) / 1000 
             };
 
-            // Update Overlay
-            document.getElementById('disp-speed').innerText = (crd.speed * 3.6).toFixed(1); // m/s to km/h
+            document.getElementById('disp-speed').innerText = (crd.speed * 3.6).toFixed(1); 
             document.getElementById('disp-alt').innerText = crd.altitude ? Math.round(crd.altitude) : "0";
 
             if (isRecording) {
@@ -170,11 +175,8 @@
 
         // --- RECORDING LOGIC ---
         function toggleRecording() {
-            if (!isRecording) {
-                startRecording();
-            } else {
-                stopRecording();
-            }
+            if (!isRecording) startRecording();
+            else stopRecording();
         }
 
         function startRecording() {
@@ -184,42 +186,49 @@
             videoMeta = [];
             segmentCounter = 1;
             
-            // Name generation
-            const now = new Date();
-            const safeDate = now.toISOString().split('T')[0];
-            const timeStr = now.toTimeString().split(' ')[0].replace(/:/g, '-');
-            
-            // Start Recorder
             recordedChunks = [];
             currentClipStart = 0;
+            
             mediaRecorder.start();
             isRecording = true;
+            isAutoSplitting = false;
             
             updateUI(true);
-            requestWakeLock(); // <--- KEEP SCREEN ON
+            requestWakeLock();
             showToast("Recording Started");
+
+            // Start the Auto-Split Timer
+            splitTimerInt = setInterval(() => {
+                if(isRecording) {
+                    // This flag tells the onstop handler to restart immediately
+                    isAutoSplitting = true;
+                    mediaRecorder.stop(); 
+                    showToast("Saving Clip...");
+                }
+            }, SEGMENT_DURATION_MS);
         }
 
         function stopRecording() {
-            mediaRecorder.stop(); // Triggers saveVideoSegment
-            isRecording = false;
+            isRecording = false; // This prevents auto-restart in onstop
+            clearInterval(splitTimerInt); // Stop the splitter
+            mediaRecorder.stop(); // Final save
             updateUI(false);
-            releaseWakeLock(); // <--- LET SCREEN SLEEP
+            releaseWakeLock();
             
-            // Wait slight delay for saveVideoSegment to finish async save
-            setTimeout(saveSessionJSON, 500);
+            // Wait slight delay for final DB write
+            setTimeout(saveSessionJSON, 1000);
         }
 
-        function saveVideoSegment() {
+        // Handles both "Stop" and "Split" events
+        function handleStopOrSplit() {
             const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
-            recordedChunks = [];
-            
+            recordedChunks = []; // CLEAR RAM IMMEDIATELY
+
             // Generate Filename
             const dateStr = new Date(sessionID).toISOString().split('T')[0];
             const timeStr = new Date(sessionID).toTimeString().split(' ')[0].replace(/:/g, '-');
             const filename = `Run_${dateStr}_${timeStr}_Clip_${String(segmentCounter).padStart(2, '0')}.mp4`;
             
-            // Metadata
             const endTime = (Date.now() - sessionID) / 1000;
             videoMeta.push({
                 filename: filename,
@@ -236,6 +245,12 @@
 
             currentClipStart = endTime;
             segmentCounter++;
+
+            // IF THIS WAS AN AUTO-SPLIT, RESTART IMMEDIATELY
+            if (isAutoSplitting) {
+                mediaRecorder.start();
+                isAutoSplitting = false;
+            }
         }
 
         function saveSessionJSON() {
@@ -263,15 +278,18 @@
 
         // --- PHOTOS & MARKERS ---
         function takePhoto() {
+            // DYNAMIC RESOLUTION FIX: Use actual video size
+            const videoEl = document.getElementById('preview');
             const canvas = document.createElement('canvas');
-            canvas.width = 1280; canvas.height = 720;
+            canvas.width = videoEl.videoWidth || 1280; 
+            canvas.height = videoEl.videoHeight || 720;
+            
             const ctx = canvas.getContext('2d');
-            ctx.drawImage(document.getElementById('preview'), 0, 0, canvas.width, canvas.height);
+            ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
             
-            // Compression
-            const dataURL = canvas.toDataURL('image/jpeg', 0.7);
+            // High quality JPEG
+            const dataURL = canvas.toDataURL('image/jpeg', 0.8);
             
-            // Chunking for huge strings (Crash prevention)
             const chunks = [];
             for (let i = 0; i < dataURL.length; i += 50000) {
                 chunks.push(dataURL.substring(i, i + 50000));
@@ -281,19 +299,18 @@
                 time: currentPos.time,
                 lat: currentPos.lat,
                 lng: currentPos.lng,
-                src_chunks: chunks // Stored as array
+                src_chunks: chunks 
             });
             
             showToast("Photo Captured");
         }
 
         function addMarker() {
-            // Just a photo with no image data, essentially
             photos.push({
                 time: currentPos.time,
                 lat: currentPos.lat,
                 lng: currentPos.lng,
-                src_chunks: [], // Empty
+                src_chunks: [],
                 type: 'marker'
             });
             showToast("Marker Set");
@@ -304,7 +321,7 @@
             const btn = document.getElementById('btn-rec');
             if (recording) {
                 btn.classList.add('recording');
-                btn.innerText = "⏹";
+                btn.innerText = "竢ｹ";
                 let s = 0;
                 recordTimerInt = setInterval(() => { 
                     s = Math.floor((Date.now() - sessionID)/1000); 
@@ -314,7 +331,7 @@
                 }, 1000);
             } else {
                 btn.classList.remove('recording');
-                btn.innerText = "🔴 REC";
+                btn.innerText = "閥 REC";
                 clearInterval(recordTimerInt);
             }
         }
@@ -328,7 +345,6 @@
 
         // Start
         init();
-
     </script>
 </body>
 </html>
