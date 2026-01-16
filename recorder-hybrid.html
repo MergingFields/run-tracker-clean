@@ -3,19 +3,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Run Tracker V31 (Fixed Engine db v+1)</title>
+    <title>Run Tracker V32 (Fixed to 18)</title>
     <style>
         body { margin: 0; background: #000; color: white; font-family: sans-serif; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
         
-        /* VIDEO CONTAINER */
         #video-container { position: relative; flex-grow: 1; background: #111; display: flex; align-items: center; justify-content: center; overflow: hidden; }
         video { width: 100%; height: 100%; object-fit: cover; }
         
-        /* OVERLAY DATA */
         #overlay-data { position: absolute; top: 10px; left: 10px; z-index: 10; font-family: monospace; font-size: 14px; text-shadow: 1px 1px 2px black; pointer-events: none; }
         
-        /* CONTROLS (Your Original Layout) */
-        #controls { height: 120px; background: #111; display: grid; grid-template-columns: 1fr 1fr 1fr 0.5fr; gap: 10px; padding: 10px; border-top: 1px solid #333; z-index: 20; }
+        /* CONTROLS - REVERTED TO V18 LAYOUT (Minus Mark) */
+        #controls { height: 120px; background: #111; display: grid; grid-template-columns: 1fr 1fr 0.5fr; gap: 10px; padding: 10px; border-top: 1px solid #333; z-index: 20; }
         
         button { border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; color: #fff; background: #333; display: flex; flex-direction: column; align-items: center; justify-content: center; }
         button:active { background: #555; }
@@ -23,13 +21,11 @@
         #btn-rec { background: #444; border: 2px solid #555; color: #ff4444; }
         #btn-rec.recording { background: #ff4444; color: white; animation: pulse 2s infinite; }
         
-        #btn-mark { background: #4fceff; color: #000; }
         #btn-photo { background: #ffd700; color: #000; }
         #btn-back { background: #222; font-size: 24px; }
 
         @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
 
-        /* TOAST */
         #status-toast { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.8); color: white; padding: 15px 25px; border-radius: 8px; font-size: 18px; pointer-events: none; opacity: 0; transition: opacity 0.3s; z-index: 100; }
     </style>
 </head>
@@ -47,15 +43,14 @@
 
     <div id="controls">
         <button id="btn-rec" onclick="toggleRecording()">🔴 REC</button>
-        <button id="btn-mark" onclick="addMarker()">📍 MARK</button>
         <button id="btn-photo" onclick="takePhoto()">📸 IMG</button>
         <button id="btn-back" onclick="window.location.href='session-manager.html'">↩</button>
     </div>
 
     <script>
-        // --- MATCHING CONFIG V107 ---
+        // *** CLEAN DATABASE RESTART ***
         const DB_NAME = "RunTrackerDB";
-        const DB_VERSION = 107; 
+        const DB_VERSION = 6; 
         
         let mediaRecorder;
         let recordedChunks = [];
@@ -68,21 +63,27 @@
         let recordTimerInt = null;
         let wakeLock = null;
 
-        // GPS
+        // GPS State
         let currentPos = { lat: 0, lng: 0, speed: 0, alt: 0, heading: 0, time: 0 };
         let watchID = null;
 
         async function init() {
             try {
-                // FIX 1: FORCE 720p (Prevents Black Screen Crash on Mobile)
+                // FORCE 720p - This prevents the phone from crashing after 20s
                 const stream = await navigator.mediaDevices.getUserMedia({ 
                     video: { facingMode: "environment", width: 1280, height: 720 }, 
                     audio: true 
                 });
                 document.getElementById('preview').srcObject = stream;
                 
-                // Initialize Recorder
-                setupRecorder(stream);
+                // Initialize Recorder WITHOUT forced codecs (prevents crash)
+                mediaRecorder = new MediaRecorder(stream);
+                
+                mediaRecorder.ondataavailable = e => {
+                    if (e.data.size > 0) recordedChunks.push(e.data);
+                };
+
+                mediaRecorder.onstop = saveVideoSegment;
 
                 // GPS
                 if ("geolocation" in navigator) {
@@ -91,7 +92,7 @@
                     });
                 }
 
-                // DB Init
+                // DB
                 initDB();
                 
                 // Wake Lock
@@ -100,24 +101,16 @@
             } catch (err) { alert("Camera Error: " + err); }
         }
 
-        function setupRecorder(stream) {
-            // Use browser default codec (Safest)
-            mediaRecorder = new MediaRecorder(stream);
-            
-            mediaRecorder.ondataavailable = e => {
-                if (e.data.size > 0) recordedChunks.push(e.data);
-            };
-
-            // This triggers when we call .stop()
-            mediaRecorder.onstop = saveVideoSegment;
-        }
-
         function initDB() {
             const req = indexedDB.open(DB_NAME, DB_VERSION);
             req.onupgradeneeded = e => {
                 const db = e.target.result;
-                if (!db.objectStoreNames.contains("sessions")) db.createObjectStore("sessions", { keyPath: "id" });
-                if (!db.objectStoreNames.contains("videos")) db.createObjectStore("videos");
+                // Wipe old data to ensure clean state
+                if (db.objectStoreNames.contains("sessions")) db.deleteObjectStore("sessions");
+                if (db.objectStoreNames.contains("videos")) db.deleteObjectStore("videos");
+                
+                db.createObjectStore("sessions", { keyPath: "id" });
+                db.createObjectStore("videos");
             };
         }
 
@@ -156,7 +149,8 @@
             trackPoints = []; photos = []; videoMeta = []; segmentCounter = 1;
             recordedChunks = [];
             
-            // FIX 2: TIMESLICE 1000ms (Prevents Encoder Crash/Black Screen)
+            // KEY FIX: 1000ms flush. 
+            // This stops the "Black Screen" bug by clearing RAM every second.
             mediaRecorder.start(1000); 
             
             isRecording = true;
@@ -165,14 +159,16 @@
         }
 
         function stopRecording() {
-            // Stop recorder -> Triggers onstop -> Triggers saveVideoSegment -> Triggers saveSessionJSON
-            mediaRecorder.stop(); 
+            mediaRecorder.stop(); // Triggers saveVideoSegment -> saveSessionJSON
             isRecording = false;
             updateUI(false);
         }
 
         function saveVideoSegment() {
+            // Create Blob using the browser's native type (Safest)
             const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
+            recordedChunks = [];
+            
             const dateStr = new Date(sessionID).toISOString().split('T')[0];
             const timeStr = new Date(sessionID).toTimeString().split(' ')[0].replace(/:/g, '-');
             const filename = `Run_${dateStr}_${timeStr}.mp4`;
@@ -187,8 +183,7 @@
             req.onsuccess = e => {
                 const tx = e.target.result.transaction("videos", "readwrite");
                 tx.objectStore("videos").put(blob, filename);
-                
-                // Only save JSON once video is confirmed saved
+                // Save JSON immediately after video is safe
                 tx.oncomplete = () => saveSessionJSON();
             };
         }
@@ -221,17 +216,13 @@
             canvas.width = 1280; canvas.height = 720;
             const ctx = canvas.getContext('2d');
             ctx.drawImage(document.getElementById('preview'), 0, 0, canvas.width, canvas.height);
+            
             const dataURL = canvas.toDataURL('image/jpeg', 0.7);
             const chunks = [];
             for (let i = 0; i < dataURL.length; i += 50000) chunks.push(dataURL.substring(i, i + 50000));
 
             photos.push({ time: currentPos.time, lat: currentPos.lat, lng: currentPos.lng, src_chunks: chunks });
             showToast("Photo Captured");
-        }
-
-        function addMarker() {
-            photos.push({ time: currentPos.time, lat: currentPos.lat, lng: currentPos.lng, src_chunks: [], type: 'marker' });
-            showToast("Marker Set");
         }
 
         function updateUI(recording) {

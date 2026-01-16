@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>V31 Session Manager db v+1</title>
+    <title>Session Manager 32 (fixed to 18</title>
     <style>
         body { background: #111; color: #eee; font-family: system-ui; padding: 20px; }
         h1 { border-bottom: 1px solid #333; padding-bottom: 10px; display: flex; align-items: center; justify-content: space-between; }
@@ -25,9 +25,9 @@
     <div id="session-list"></div>
 
     <script>
-        // *** MUST MATCH RECORDER VERSION ***
+        // *** SYNCED WITH RECORDER ***
         const DB_NAME = "RunTrackerDB";
-        const DB_VERSION = 107;
+        const DB_VERSION = 6;
 
         function loadSessions() {
             const req = indexedDB.open(DB_NAME, DB_VERSION);
