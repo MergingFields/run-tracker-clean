@@ -3,43 +3,38 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Run Tracker V26 (Just Work)</title>
+    <title>Run Tracker V27 (Chain Save)</title>
     <style>
         body { margin: 0; background: #000; color: white; font-family: sans-serif; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
         
-        /* VIDEO FEED */
+        /* 1. VIEWPORT */
         #view-container { position: relative; flex-grow: 1; background: #111; overflow: hidden; }
         video { width: 100%; height: 100%; object-fit: cover; }
         
-        /* DATA OVERLAY */
+        /* 2. HUD */
         #overlay-data { position: absolute; top: 20px; left: 20px; z-index: 10; font-size: 18px; font-weight: bold; text-shadow: 2px 2px 4px #000; pointer-events: none; }
         .val { color: #4fceff; }
-        .rec-active { color: #ff4444; display: none; }
+        .rec-active { color: #ff4444; display: none; animation: blink 1s infinite; }
+        @keyframes blink { 50% { opacity: 0.5; } }
 
-        /* LOADING SHIELD (Appears when saving) */
-        #save-shield { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 50; display: none; flex-direction: column; align-items: center; justify-content: center; }
-        .spinner { width: 40px; height: 40px; border: 4px solid #444; border-top: 4px solid #4fceff; border-radius: 50%; animation: spin 1s linear infinite; }
+        /* 3. BLOCKING SAVE SCREEN (Prevents User Error) */
+        #save-screen { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 100; display: none; flex-direction: column; align-items: center; justify-content: center; }
+        .spinner { width: 50px; height: 50px; border: 5px solid #333; border-top: 5px solid #00e676; border-radius: 50%; animation: spin 1s linear infinite; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        #save-status { margin-top: 20px; font-size: 20px; color: #00e676; font-family: monospace; }
 
-        /* CONTROLS */
-        #controls { height: 120px; background: #000; display: flex; align-items: center; justify-content: space-around; padding: 10px; border-top: 1px solid #333; z-index: 20; }
+        /* 4. CONTROLS */
+        #controls { height: 140px; background: #000; display: flex; align-items: center; justify-content: space-around; padding: 10px; border-top: 1px solid #333; z-index: 20; }
         
         .btn { width: 80px; height: 80px; border-radius: 50%; border: none; font-weight: bold; color: white; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 14px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
         
-        /* Record Button */
         #btn-rec { background: #333; border: 4px solid #fff; color: #ff4444; width: 90px; height: 90px; }
-        #btn-rec.recording { background: #ff4444; color: white; border-color: #ff4444; animation: pulse 2s infinite; }
+        #btn-rec.recording { background: #ff4444; color: white; border-color: #ff4444; }
         
-        /* Photo Button */
         #btn-photo { background: #ffd700; color: #000; }
-        
-        /* Back Button */
         #btn-back { background: #333; color: #aaa; width: 60px; height: 60px; font-size: 24px; }
-
-        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.05); } 100% { transform: scale(1); } }
         
-        /* TOAST */
-        #toast { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.7); padding: 15px 30px; border-radius: 30px; font-size: 20px; opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 100; }
+        #toast { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.7); padding: 15px 30px; border-radius: 30px; font-size: 20px; opacity: 0; pointer-events: none; z-index: 50; transition: opacity 0.3s; }
     </style>
 </head>
 <body>
@@ -47,9 +42,9 @@
     <div id="view-container">
         <video id="preview" autoplay playsinline muted></video>
         
-        <div id="save-shield">
+        <div id="save-screen">
             <div class="spinner"></div>
-            <div style="margin-top:20px; font-weight:bold;">SAVING DATA...</div>
+            <div id="save-status">SAVING...</div>
         </div>
 
         <div id="overlay-data">
@@ -57,7 +52,6 @@
             <div>SPD: <span id="v-spd" class="val">0.0</span> km/h</div>
             <div>ALT: <span id="v-alt" class="val">0</span> m</div>
         </div>
-        
         <div id="toast"></div>
     </div>
 
@@ -78,7 +72,6 @@
         let trackPoints = [];
         let photos = [];
         let videoMeta = []; 
-        let segmentCounter = 1;
         let wakeLock = null; 
         let timerInt = null;
         
@@ -91,7 +84,7 @@
         // --- 1. SETUP ---
         async function init() {
             try {
-                // Force 720p for stability
+                // Request 720p (Good quality, high stability)
                 const stream = await navigator.mediaDevices.getUserMedia({ 
                     video: { facingMode: "environment", width: 1280, height: 720 }, 
                     audio: true 
@@ -117,13 +110,13 @@
             };
         }
 
-        // --- 2. GPS & ACCEL ---
+        // --- 2. GPS ---
         function updateGPS(pos) {
             const c = pos.coords;
             const now = Date.now();
             const t = sessionID ? (now - sessionID) / 1000 : 0;
             
-            // Calculate Acceleration
+            // Calculate Accel
             let acc = 0;
             if (lastPos && c.speed !== null && lastPos.spd !== null) {
                 const dt = (now - lastPos.ts) / 1000;
@@ -137,7 +130,6 @@
             };
             lastPos = { spd: c.speed || 0, ts: now };
 
-            // Update UI
             document.getElementById('v-spd').innerText = (curPos.spd * 3.6).toFixed(1);
             document.getElementById('v-alt').innerText = Math.round(curPos.alt);
 
@@ -151,7 +143,7 @@
 
         function startRec() {
             sessionID = Date.now();
-            trackPoints = []; photos = []; videoMeta = []; segmentCounter = 1;
+            trackPoints = []; photos = []; videoMeta = []; 
             recordedChunks = [];
             
             try {
@@ -162,10 +154,10 @@
                 if(e.data.size > 0) recordedChunks.push(e.data);
             };
 
-            // CRITICAL: onstop triggers the save chain
-            mediaRecorder.onstop = performSave;
+            // CRITICAL: Connect the stop event to the Save Chain
+            mediaRecorder.onstop = executeSaveChain;
             
-            // 1000ms flush to prevent crash
+            // 1s timeslice to keep memory low
             mediaRecorder.start(1000); 
             
             isRecording = true;
@@ -174,67 +166,82 @@
         }
 
         function stopRec() {
-            mediaRecorder.stop(); // This triggers performSave()
+            // 1. Show Blocking Screen immediately so user waits
+            document.getElementById('save-screen').style.display = 'flex';
+            document.getElementById('save-status').innerText = "WRITING VIDEO...";
+            
+            // 2. Stop Recorder (Triggers executeSaveChain)
+            mediaRecorder.stop();
             isRecording = false;
             updateUI(false);
-            
-            // Show Loading Shield
-            document.getElementById('save-shield').style.display = 'flex';
         }
 
-        // --- 4. SAVING (THE CHAIN) ---
-        function performSave() {
+        // --- 4. THE CHAIN SAVE (Safety Logic) ---
+        function executeSaveChain() {
             if(recordedChunks.length === 0) {
-                alert("No video data recorded!");
+                alert("No video captured!");
                 window.location.href = 'session-manager.html';
                 return;
             }
 
+            // Step 1: Create Blob
             const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
             
-            // Generate Filenames
             const dateStr = new Date(sessionID).toISOString().split('T')[0];
             const timeStr = new Date(sessionID).toTimeString().split(' ')[0].replace(/:/g, '-');
-            const fname = `Run_${dateStr}_${timeStr}_Clip_01.mp4`; // Defaulting to MP4 ext for simplicity
+            const fname = `Run_${dateStr}_${timeStr}.mp4`;
             
-            // 1. Save Video Blob
+            videoMeta.push({
+                filename: fname,
+                startTime: 0,
+                endTime: (Date.now() - sessionID)/1000
+            });
+
+            // Step 2: Open DB
             const req = indexedDB.open(DB_NAME, DB_VERSION);
+            
             req.onsuccess = e => {
                 const db = e.target.result;
-                const txVid = db.transaction("videos", "readwrite");
                 
+                // Step 3: Save VIDEO
+                const txVid = db.transaction("videos", "readwrite");
                 txVid.objectStore("videos").put(blob, fname);
                 
                 txVid.oncomplete = () => {
-                    // 2. Video Saved -> Now Save JSON
-                    saveJSON(fname, db);
+                    document.getElementById('save-status').innerText = "WRITING DATA...";
+                    
+                    // Step 4: Video is Safe -> Now Save JSON
+                    const finalData = {
+                        id: sessionID,
+                        date: new Date(sessionID).toISOString(),
+                        duration: (Date.now() - sessionID)/1000,
+                        track_points: trackPoints,
+                        photos: photos,
+                        videoData: videoMeta
+                    };
+
+                    const txJson = db.transaction("sessions", "readwrite");
+                    txJson.objectStore("sessions").put(finalData);
+                    
+                    txJson.oncomplete = () => {
+                        // Step 5: Everything is Safe -> Redirect
+                        document.getElementById('save-status').innerText = "DONE!";
+                        setTimeout(() => window.location.href = 'session-manager.html', 500);
+                    };
+                    
+                    txJson.onerror = () => {
+                        alert("Error saving JSON Data");
+                        document.getElementById('save-screen').style.display = 'none';
+                    };
                 };
                 
-                txVid.onerror = () => alert("Video Save Failed");
+                txVid.onerror = () => {
+                    alert("Error saving Video File (Disk Full?)");
+                    document.getElementById('save-screen').style.display = 'none';
+                };
             };
-        }
-
-        function saveJSON(filename, db) {
-            const finalData = {
-                id: sessionID,
-                date: new Date(sessionID).toISOString(),
-                duration: (Date.now() - sessionID)/1000,
-                track_points: trackPoints,
-                photos: photos,
-                videoData: [{
-                    filename: filename,
-                    startTime: 0,
-                    endTime: (Date.now() - sessionID)/1000
-                }]
-            };
-
-            const txJson = db.transaction("sessions", "readwrite");
-            txJson.objectStore("sessions").put(finalData);
             
-            txJson.oncomplete = () => {
-                // 3. All Saved -> Redirect
-                window.location.href = 'session-manager.html';
-            };
+            req.onerror = () => alert("Database Error");
         }
 
         // --- 5. EXTRAS ---
@@ -253,10 +260,9 @@
         function updateUI(active) {
             const b = document.getElementById('btn-rec');
             const s = document.getElementById('status-line');
-            
             if(active) {
                 b.classList.add('recording'); b.innerText = "STOP";
-                s.style.display = "block";
+                s.style.display = 'block';
                 let ticks = 0;
                 timerInt = setInterval(() => {
                     ticks = Math.floor((Date.now() - sessionID)/1000);
@@ -266,7 +272,7 @@
                 }, 1000);
             } else {
                 b.classList.remove('recording'); b.innerText = "REC";
-                s.style.display = "none";
+                s.style.display = 'none';
                 clearInterval(timerInt);
             }
         }
