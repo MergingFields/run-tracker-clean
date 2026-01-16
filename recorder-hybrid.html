@@ -52,7 +52,14 @@
         <button id="btn-back" onclick="window.location.href='session-manager.html'">↩</button>
     </div>
 
-<script>
+<div id="start-screen" style="position:fixed; top:0; left:0; width:100%; height:100%; background:#000; z-index:9999; display:flex; align-items:center; justify-content:center; flex-direction:column;">
+        <button onclick="startCamera()" style="padding:20px 40px; font-size:20px; background:#00e676; color:#000; border:none; border-radius:50px;">
+            📸 Tap to Start Camera
+        </button>
+        <p style="color:#666; margin-top:20px;">Requested: 1080p @ 60fps</p>
+    </div>
+
+    <script>
         // --- CONFIG ---
         const DB_NAME = "RunTrackerDB";
         const DB_VERSION = 2;
@@ -62,7 +69,7 @@
         let mediaRecorder;
         let recordedChunks = [];
         let isRecording = false;
-        let isAutoSplitting = false; // Flag to track auto-splits
+        let isAutoSplitting = false;
         let sessionID = null;
         let trackPoints = [];
         let photos = [];
@@ -77,69 +84,97 @@
         let currentPos = { lat: 0, lng: 0, speed: 0, alt: 0, heading: 0, time: 0 };
         let watchID = null;
 
-        // --- INIT ---
-        async function init() {
+        // --- CAMERA STARTUP (THE FIX) ---
+        async function startCamera() {
+            // Hide the start button
+            document.getElementById('start-screen').style.display = 'none';
+
+            // ATTEMPT 1: High Quality (1080p @ 60fps)
             try {
-                // 1. Setup Camera (Requested High Res & 60 FPS)
+                console.log("Attempting High-Res (1080p/60fps)...");
                 const stream = await navigator.mediaDevices.getUserMedia({ 
                     video: { 
                         facingMode: "environment", 
-                        width: { ideal: 1920 }, // Ask for 1080p
+                        width: { ideal: 1920 }, 
                         height: { ideal: 1080 },
-                        frameRate: { ideal: 60 } // Ask for 60fps
+                        frameRate: { ideal: 60 } 
                     }, 
                     audio: true 
                 });
-                
-                const vidTrack = stream.getVideoTracks()[0];
-                const settings = vidTrack.getSettings();
-                console.log(`Camera initialized: ${settings.width}x${settings.height} @ ${settings.frameRate}fps`);
-
-                document.getElementById('preview').srcObject = stream;
-                
-                // 2. Setup Recorder
-                let options = { mimeType: 'video/webm;codecs=vp9' };
-                if (MediaRecorder.isTypeSupported('video/mp4; codecs=avc1,mp4a.40.2')) {
-                    options = { mimeType: 'video/mp4; codecs=avc1,mp4a.40.2' };
-                } else if (MediaRecorder.isTypeSupported('video/mp4')) {
-                    options = { mimeType: 'video/mp4' };
-                }
-                
-                mediaRecorder = new MediaRecorder(stream, options);
-                
-                mediaRecorder.ondataavailable = e => {
-                    if (e.data.size > 0) recordedChunks.push(e.data);
-                };
-
-                // When recorder stops, we save whatever is in the buffer
-                mediaRecorder.onstop = handleStopOrSplit;
-
-                // 3. Setup GPS
-                if ("geolocation" in navigator) {
-                    watchID = navigator.geolocation.watchPosition(updateGPS, err => console.error(err), {
-                        enableHighAccuracy: true, maximumAge: 0
-                    });
-                }
-
-                // 4. Init DB
-                const req = indexedDB.open(DB_NAME, DB_VERSION);
-                req.onupgradeneeded = e => {
-                    const db = e.target.result;
-                    if (!db.objectStoreNames.contains("sessions")) db.createObjectStore("sessions", { keyPath: "id" });
-                    if (!db.objectStoreNames.contains("videos")) db.createObjectStore("videos"); 
-                };
-
+                onStreamSuccess(stream, "1080p/60fps (High Res)");
             } catch (err) {
-                alert("Camera Error: " + err);
+                console.warn("High-Res failed, falling back to Standard...", err);
+                
+                // ATTEMPT 2: Fallback (Standard 720p)
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ 
+                        video: { facingMode: "environment" }, // Default safe settings
+                        audio: true 
+                    });
+                    onStreamSuccess(stream, "Standard Res (Fallback)");
+                } catch (err2) {
+                    alert("Fatal Camera Error: " + err2.message + "\n\nCheck iPhone Settings > Safari > Camera > Allow.");
+                    document.getElementById('start-screen').style.display = 'flex'; // Show button again
+                }
             }
+        }
+
+        function onStreamSuccess(stream, mode) {
+            const vidTrack = stream.getVideoTracks()[0];
+            const settings = vidTrack.getSettings();
+            console.log(`Success: ${mode} | Actual: ${settings.width}x${settings.height} @ ${settings.frameRate}fps`);
+            showToast("Camera: " + mode);
+
+            const videoEl = document.getElementById('preview');
+            videoEl.srcObject = stream;
+            // standard HTML5 video attributes to prevent iOS fullscreen issues
+            videoEl.setAttribute('playsinline', ''); 
+            videoEl.setAttribute('muted', '');
+            videoEl.play();
+            
+            setupRecorder(stream);
+            setupGPS();
+            initDB();
+        }
+
+        function setupRecorder(stream) {
+            // Try MP4 first, then WebM
+            let options = { mimeType: 'video/webm;codecs=vp9' };
+            if (MediaRecorder.isTypeSupported('video/mp4; codecs=avc1,mp4a.40.2')) {
+                options = { mimeType: 'video/mp4; codecs=avc1,mp4a.40.2' };
+            } else if (MediaRecorder.isTypeSupported('video/mp4')) {
+                options = { mimeType: 'video/mp4' };
+            }
+            
+            mediaRecorder = new MediaRecorder(stream, options);
+            mediaRecorder.ondataavailable = e => {
+                if (e.data.size > 0) recordedChunks.push(e.data);
+            };
+            mediaRecorder.onstop = handleStopOrSplit;
+        }
+
+        function setupGPS() {
+            if ("geolocation" in navigator) {
+                watchID = navigator.geolocation.watchPosition(updateGPS, err => console.error(err), {
+                    enableHighAccuracy: true, maximumAge: 0
+                });
+            }
+        }
+
+        function initDB() {
+            const req = indexedDB.open(DB_NAME, DB_VERSION);
+            req.onupgradeneeded = e => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains("sessions")) db.createObjectStore("sessions", { keyPath: "id" });
+                if (!db.objectStoreNames.contains("videos")) db.createObjectStore("videos"); 
+            };
         }
 
         // --- WAKE LOCK ---
         async function requestWakeLock() {
             if ('wakeLock' in navigator) {
-                try {
-                    wakeLock = await navigator.wakeLock.request('screen');
-                } catch (err) { console.error(err); }
+                try { wakeLock = await navigator.wakeLock.request('screen'); } 
+                catch (err) { console.error(err); }
             }
         }
         function releaseWakeLock() {
@@ -175,6 +210,7 @@
 
         // --- RECORDING LOGIC ---
         function toggleRecording() {
+            if (!mediaRecorder) return alert("Camera not ready!");
             if (!isRecording) startRecording();
             else stopRecording();
         }
@@ -197,10 +233,9 @@
             requestWakeLock();
             showToast("Recording Started");
 
-            // Start the Auto-Split Timer
+            // Auto-Split Timer
             splitTimerInt = setInterval(() => {
                 if(isRecording) {
-                    // This flag tells the onstop handler to restart immediately
                     isAutoSplitting = true;
                     mediaRecorder.stop(); 
                     showToast("Saving Clip...");
@@ -209,22 +244,19 @@
         }
 
         function stopRecording() {
-            isRecording = false; // This prevents auto-restart in onstop
-            clearInterval(splitTimerInt); // Stop the splitter
-            mediaRecorder.stop(); // Final save
+            isRecording = false; 
+            clearInterval(splitTimerInt); 
+            mediaRecorder.stop(); 
             updateUI(false);
             releaseWakeLock();
-            
-            // Wait slight delay for final DB write
             setTimeout(saveSessionJSON, 1000);
         }
 
-        // Handles both "Stop" and "Split" events
         function handleStopOrSplit() {
             const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
-            recordedChunks = []; // CLEAR RAM IMMEDIATELY
+            recordedChunks = []; // CLEAR RAM
 
-            // Generate Filename
+            // Filename
             const dateStr = new Date(sessionID).toISOString().split('T')[0];
             const timeStr = new Date(sessionID).toTimeString().split(' ')[0].replace(/:/g, '-');
             const filename = `Run_${dateStr}_${timeStr}_Clip_${String(segmentCounter).padStart(2, '0')}.mp4`;
@@ -236,7 +268,7 @@
                 endTime: endTime
             });
             
-            // Save to DB
+            // Save Video
             const req = indexedDB.open(DB_NAME, DB_VERSION);
             req.onsuccess = e => {
                 const tx = e.target.result.transaction("videos", "readwrite");
@@ -246,7 +278,6 @@
             currentClipStart = endTime;
             segmentCounter++;
 
-            // IF THIS WAS AN AUTO-SPLIT, RESTART IMMEDIATELY
             if (isAutoSplitting) {
                 mediaRecorder.start();
                 isAutoSplitting = false;
@@ -276,9 +307,8 @@
             };
         }
 
-        // --- PHOTOS & MARKERS ---
+        // --- PHOTOS ---
         function takePhoto() {
-            // DYNAMIC RESOLUTION FIX: Use actual video size
             const videoEl = document.getElementById('preview');
             const canvas = document.createElement('canvas');
             canvas.width = videoEl.videoWidth || 1280; 
@@ -287,7 +317,6 @@
             const ctx = canvas.getContext('2d');
             ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
             
-            // High quality JPEG
             const dataURL = canvas.toDataURL('image/jpeg', 0.8);
             
             const chunks = [];
@@ -342,9 +371,9 @@
             t.style.opacity = 1;
             setTimeout(() => t.style.opacity = 0, 2000);
         }
-
-        // Start
-        init();
+        
+        // REMOVED AUTOMATIC init()
+        // Now waits for user to click button in HTML above
     </script>
 </body>
 </html>
