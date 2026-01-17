@@ -1,8 +1,8 @@
 # Run Tracker (Clean Build)
 
-**Version:** V11 (Hybrid Video + Auto-Save)
+**Version:** V44 (Hybrid Video + Auto-Save)
 **Status:** Operational
-
+            (earlier V11-v43 had errors and other issues from recepient)
 ## Description
 A lightweight web application that tracks GPS coordinates while recording video clips. 
 Designed to run directly in a mobile browser without installation.
