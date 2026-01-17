@@ -3,21 +3,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Run Tracker Hybrid V4 (Curtain)</title>
+    <title>Run Tracker V5 (20s Chunks + Selfie)</title>
     <style>
         body { margin: 0; background: #000; color: white; font-family: sans-serif; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
         
         /* VIDEO PREVIEW AREA */
         #video-container { position: relative; flex-grow: 1; background: #111; display: flex; align-items: center; justify-content: center; overflow: hidden; }
-        video { width: 100%; height: 100%; object-fit: cover; }
+        video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(1); /* Default no flip */ }
+        video.selfie { transform: scaleX(-1); /* Mirror effect for selfie */ }
         
         /* OVERLAYS */
         #overlay-data { position: absolute; top: 10px; left: 10px; z-index: 10; font-family: monospace; font-size: 14px; text-shadow: 1px 1px 2px black; pointer-events: none; }
         #data-counters { position: absolute; bottom: 140px; left: 10px; color: #4fceff; font-family: monospace; font-size: 14px; pointer-events: none; z-index: 20; text-shadow: 1px 1px 2px black; }
         
-        /* TOP CONTROLS (Back Button) */
-        #top-bar { position: absolute; top: 10px; right: 10px; z-index: 30; }
-        .btn-mini { background: rgba(0,0,0,0.5); border: 1px solid #555; color: #ccc; padding: 8px 12px; font-size: 12px; border-radius: 20px; text-decoration: none; display: inline-block; backdrop-filter: blur(4px); }
+        /* TOP CONTROLS */
+        #top-bar { position: absolute; top: 10px; right: 10px; z-index: 30; display: flex; gap: 10px; }
+        .btn-mini { background: rgba(0,0,0,0.5); border: 1px solid #555; color: #ccc; padding: 8px 12px; font-size: 12px; border-radius: 20px; text-decoration: none; display: inline-block; backdrop-filter: blur(4px); cursor: pointer; }
 
         /* MAIN CONTROLS GRID */
         #controls { height: 120px; background: #111; display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; padding: 10px; border-top: 1px solid #333; z-index: 20; }
@@ -31,7 +32,7 @@
         #btn-finish { background: #00e676; color: #000; }
         #btn-curtain { background: #222; color: #888; border: 1px solid #444; }
 
-        /* CURTAIN OVERLAY (Hidden by default) */
+        /* CURTAIN OVERLAY */
         #curtain-overlay { 
             display: none; 
             position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
@@ -51,7 +52,6 @@
             🏃‍♂️ START RUN
         </button>
         <p id="db-status" style="color:#666; margin-top:20px; font-family:monospace;">Connecting to DB...</p>
-        
         <a href="index.html" style="margin-top:40px; color:#666; text-decoration:none;">← Back to Home</a>
     </div>
 
@@ -64,6 +64,7 @@
         <video id="preview" autoplay playsinline muted></video>
         
         <div id="top-bar">
+            <button class="btn-mini" onclick="switchCamera()">🔄 Flip Cam</button>
             <a href="index.html" class="btn-mini">🏠 Home</a>
         </div>
         
@@ -92,13 +93,19 @@
         // --- CONFIGURATION ---
         const DB_NAME = "RunTrackerDB";
         const DB_VERSION = 99; 
-        const AUTO_SPLIT_MS = 60000; 
+        
+        // --- UPDATED SETTING: 20 SECONDS ---
+        const AUTO_SPLIT_MS = 20000; 
         const CHUNK_SIZE = 50000;
         
         // --- STATE ---
         let db = null;
         let isRunActive = false;
         let sessionStartTimestamp = 0; 
+        
+        // Camera State
+        let currentStream = null;
+        let currentFacingMode = 'environment'; // 'environment' (back) or 'user' (front)
         
         // Video State
         let mediaRecorder = null;
@@ -113,10 +120,10 @@
         let photos = [];      
         let videoMeta = [];   
         
-        // Timers & Curtain State
+        // Timers & Utils
         let runTimerInt = null;
         let wakeLock = null; 
-        let lastTapTime = 0; // For double-tap detection
+        let lastTapTime = 0;
 
         // Physics
         let liveData = { lat: 0, lng: 0, alt: 0, speed: 0, heading: 0 };
@@ -142,67 +149,84 @@
         }
         initDB();
 
-        // --- 2. CURTAIN MODE LOGIC ---
-        function toggleCurtain() {
-            const c = document.getElementById('curtain-overlay');
-            c.style.display = 'flex'; // Show curtain
-            showToast("Stealth Mode On");
-        }
-
-        function handleCurtainTap() {
-            const now = Date.now();
-            // Detect Double Tap (within 400ms)
-            if (now - lastTapTime < 400) {
-                const c = document.getElementById('curtain-overlay');
-                c.style.display = 'none'; // Hide curtain
-                showToast("Unlocked");
-            } else {
-                // Just a single tap hint
-                const h = document.getElementById('curtain-hint');
-                h.style.color = "#666";
-                setTimeout(() => h.style.color = "#333", 500);
-            }
-            lastTapTime = now;
-        }
-
-        // --- 3. RUN CONTROLS ---
+        // --- 2. CAMERA & HARDWARE ---
         async function startRun() {
             if (!db) return alert("Database not ready!");
-            
+            // Start with Back Camera
+            initCamera('environment');
+        }
+
+        async function initCamera(facing) {
+            // Stop old tracks if any
+            if (currentStream) {
+                currentStream.getTracks().forEach(track => track.stop());
+            }
+
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ 
-                    video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 } }, 
+                // Request 1080p @ 60fps preferred
+                const constraints = { 
+                    video: { 
+                        facingMode: facing, 
+                        width: { ideal: 1920 }, 
+                        height: { ideal: 1080 }, 
+                        frameRate: { ideal: 60 } 
+                    }, 
                     audio: true 
-                });
-                startHardware(stream);
+                };
+                
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                handleStreamSuccess(stream, facing);
             } catch (err) {
+                console.warn("High-Res failed, trying standard...", err);
                 try {
-                    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: true });
-                    startHardware(stream);
+                    const fallbackConstraints = { video: { facingMode: facing }, audio: true };
+                    const stream = await navigator.mediaDevices.getUserMedia(fallbackConstraints);
+                    handleStreamSuccess(stream, facing);
                 } catch (e) { alert("Camera failed: " + e.message); }
             }
         }
 
-        function startHardware(stream) {
+        function handleStreamSuccess(stream, facing) {
+            currentStream = stream;
+            currentFacingMode = facing;
+            
             document.getElementById('start-screen').style.display = 'none';
             const v = document.getElementById('preview');
             v.srcObject = stream;
             v.setAttribute('playsinline', ''); v.setAttribute('muted', ''); v.play();
+            
+            // Mirror selfie view
+            if (facing === 'user') v.classList.add('selfie');
+            else v.classList.remove('selfie');
 
             setupMediaRecorder(stream);
-            setupGPS();
+            
+            // Only start sensors/timers ONCE (at the start of run)
+            if (!isRunActive) {
+                setupGPS();
+                sessionStartTimestamp = Date.now();
+                isRunActive = true;
+                runTimerInt = setInterval(updateRunTimer, 1000);
+                requestWakeLock();
+                showToast("Run Started");
+            }
+        }
 
-            sessionStartTimestamp = Date.now();
-            isRunActive = true;
-            
-            runTimerInt = setInterval(() => {
-                let s = Math.floor((Date.now() - sessionStartTimestamp) / 1000);
-                let m = Math.floor(s/60); let sc = s%60;
-                document.getElementById('run-timer').innerText = `${m}:${sc.toString().padStart(2,'0')}`;
-            }, 1000);
-            
-            requestWakeLock();
-            showToast("Run Started");
+        function switchCamera() {
+            if (isRecordingVideo) {
+                alert("⚠️ Stop recording video before switching cameras!");
+                return;
+            }
+            // Toggle mode
+            const newMode = (currentFacingMode === 'environment') ? 'user' : 'environment';
+            initCamera(newMode);
+        }
+
+        // --- 3. RUN LOGIC ---
+        function updateRunTimer() {
+            let s = Math.floor((Date.now() - sessionStartTimestamp) / 1000);
+            let m = Math.floor(s/60); let sc = s%60;
+            document.getElementById('run-timer').innerText = `${m}:${sc.toString().padStart(2,'0')}`;
         }
 
         function finishRun() {
@@ -228,7 +252,7 @@
             tx.onerror = (e) => alert("Save Failed: " + e.target.error);
         }
 
-        // --- 4. VIDEO CONTROLS ---
+        // --- 4. VIDEO LOGIC (20s CHUNKS + MATCHED NAMING) ---
         function setupMediaRecorder(stream) {
             let options = { mimeType: 'video/mp4' }; 
             if (!MediaRecorder.isTypeSupported('video/mp4')) options = { mimeType: 'video/webm' };
@@ -242,7 +266,7 @@
             if (!isRunActive) return;
             
             if (!isRecordingVideo) {
-                // Start
+                // START
                 recordedChunks = [];
                 currentVideoStartOffset = (Date.now() - sessionStartTimestamp) / 1000;
                 mediaRecorder.start();
@@ -251,11 +275,14 @@
                 document.getElementById('btn-video').innerText = "⬛ STOP VIDEO";
                 document.getElementById('btn-video').classList.add('recording');
                 
+                // AUTO-SPLIT (20 SECONDS)
                 clearInterval(splitTimerInt);
-                splitTimerInt = setInterval(() => { if(isRecordingVideo) mediaRecorder.stop(); }, AUTO_SPLIT_MS);
+                splitTimerInt = setInterval(() => { 
+                    if(isRecordingVideo) mediaRecorder.stop(); 
+                }, AUTO_SPLIT_MS);
                 
             } else {
-                // Stop
+                // STOP
                 isRecordingVideo = false;
                 clearInterval(splitTimerInt);
                 mediaRecorder.stop();
@@ -269,7 +296,13 @@
             const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
             recordedChunks = []; 
 
-            const filename = `Run_${sessionStartTimestamp}_Clip_${String(videoSegmentCounter).padStart(3, '0')}.mp4`;
+            // NAME GENERATION: Matches JSON Date format exactly
+            // Format: Run_YYYY-MM-DD_HH-mm-ss_Clip_01.mp4
+            const d = new Date(sessionStartTimestamp);
+            const dateStr = d.toISOString().split('T')[0];
+            const timeStr = d.toTimeString().split(' ')[0].replace(/:/g, '-');
+            
+            const filename = `Run_${dateStr}_${timeStr}_Clip_${String(videoSegmentCounter).padStart(3, '0')}.mp4`;
             const endOffset = (Date.now() - sessionStartTimestamp) / 1000;
 
             const tx = db.transaction("videos", "readwrite");
@@ -289,22 +322,52 @@
                 videoSegmentCounter++;
                 currentVideoStartOffset = endOffset;
                 
+                // If this was an auto-split, restart immediately
                 if (isRecordingVideo) mediaRecorder.start();
             };
         }
 
-        // --- 5. PHOTOS ---
+        // --- 5. PHOTOS (MULTI-RES) ---
         function takePhoto() {
             if (!isRunActive) return;
             const v = document.getElementById('preview');
-            const c = document.createElement('canvas');
-            c.width = v.videoWidth; c.height = v.videoHeight;
-            c.getContext('2d').drawImage(v,0,0);
-            const fullBase64 = c.toDataURL('image/jpeg', 0.8);
             
-            const chunks = [];
-            for(let i=0; i < fullBase64.length; i += CHUNK_SIZE) chunks.push(fullBase64.substring(i, i + CHUNK_SIZE));
+            // 1. Capture Original (High Res)
+            const cHigh = document.createElement('canvas');
+            cHigh.width = v.videoWidth; 
+            cHigh.height = v.videoHeight;
+            const ctxHigh = cHigh.getContext('2d');
             
+            // Handle mirroring if selfie
+            if (currentFacingMode === 'user') {
+                ctxHigh.translate(cHigh.width, 0);
+                ctxHigh.scale(-1, 1);
+            }
+            ctxHigh.drawImage(v, 0, 0);
+            const highBase64 = cHigh.toDataURL('image/jpeg', 0.85);
+
+            // 2. Capture Compressed (Low Res ~480p)
+            const scaleFactor = 480 / v.videoHeight;
+            const cLow = document.createElement('canvas');
+            cLow.width = v.videoWidth * scaleFactor;
+            cLow.height = v.videoHeight * scaleFactor;
+            const ctxLow = cLow.getContext('2d');
+            
+            if (currentFacingMode === 'user') {
+                ctxLow.translate(cLow.width, 0);
+                ctxLow.scale(-1, 1);
+            }
+            ctxLow.drawImage(v, 0, 0, cLow.width, cLow.height);
+            const lowBase64 = cLow.toDataURL('image/jpeg', 0.6); // Lower quality too
+
+            // Helper to chunk strings
+            const chunkString = (str) => {
+                const arr = [];
+                for(let i=0; i<str.length; i+=CHUNK_SIZE) arr.push(str.substring(i, i+CHUNK_SIZE));
+                return arr;
+            };
+
+            // Save Photo Record
             photos.push({
                 time: (Date.now() - sessionStartTimestamp) / 1000,
                 lat: liveData.lat,
@@ -312,30 +375,27 @@
                 alt: liveData.alt,
                 heading: liveData.heading,
                 speed: liveData.speed,
-                src_chunks: chunks 
+                src_chunks: chunkString(highBase64),    // ORIGINAL
+                src_small_chunks: chunkString(lowBase64) // COMPRESSED
             });
             
             document.getElementById('cnt-photos').innerText = photos.length;
-            showToast("Photo Saved");
+            showToast("Photo Saved (x2 Sizes)");
         }
 
-        // --- 6. GPS ---
+        // --- 6. GPS & CURTAIN ---
         function setupGPS() {
             if ("geolocation" in navigator) {
+                // Compass logic
+                const handleOrient = (e) => {
+                    if(e.webkitCompassHeading) magneticHeading = e.webkitCompassHeading;
+                    else if (e.alpha) magneticHeading = 360 - e.alpha;
+                };
                 if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-                    DeviceOrientationEvent.requestPermission()
-                        .then(r => { if(r==='granted') window.addEventListener('deviceorientation', e => {
-                            if(e.webkitCompassHeading) magneticHeading = e.webkitCompassHeading;
-                            else if (e.alpha) magneticHeading = 360 - e.alpha;
-                        })})
-                        .catch(console.error);
+                    DeviceOrientationEvent.requestPermission().then(r => { if(r==='granted') window.addEventListener('deviceorientation', handleOrient); });
                 } else {
-                     window.addEventListener('deviceorientation', e => {
-                        if(e.webkitCompassHeading) magneticHeading = e.webkitCompassHeading;
-                        else if (e.alpha) magneticHeading = 360 - e.alpha;
-                    });
+                    window.addEventListener('deviceorientation', handleOrient);
                 }
-                
                 navigator.geolocation.watchPosition(updatePhysics, console.error, { enableHighAccuracy: true });
             }
         }
@@ -344,7 +404,6 @@
             const now = Date.now();
             const crd = pos.coords;
             const newSpeed = crd.speed || 0;
-            
             let bestHeading = crd.heading;
             if (!bestHeading || isNaN(bestHeading) || newSpeed < 0.5) bestHeading = magneticHeading;
 
@@ -365,6 +424,20 @@
             }
         }
         
+        // Curtain Logic
+        function toggleCurtain() {
+            document.getElementById('curtain-overlay').style.display = 'flex';
+            showToast("Stealth Mode On");
+        }
+        function handleCurtainTap() {
+            const now = Date.now();
+            if (now - lastTapTime < 400) {
+                document.getElementById('curtain-overlay').style.display = 'none';
+                showToast("Unlocked");
+            }
+            lastTapTime = now;
+        }
+
         function requestWakeLock() { if ('wakeLock' in navigator) navigator.wakeLock.request('screen').catch(e=>{}); }
         function showToast(msg) {
             const t = document.getElementById('status-toast');
