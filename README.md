@@ -1,8 +1,8 @@
 # Run Tracker (Clean Build)
 
 **Version:** V46
-**Status:** Still buggy
-            (earlier V11-v43 had errors and other issues from recepient)
+**Status:** Buggy
+            
 ## Description
 A lightweight web application that tracks GPS coordinates while recording video clips. 
 Designed to run directly in a mobile browser without installation.
