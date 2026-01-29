@@ -18,11 +18,25 @@
         #stealth-btn { margin-top: 50px; background: transparent; border: 1px solid #333; color: #555; padding: 10px 20px; border-radius: 20px; cursor: pointer; }
         #curtain { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: black; z-index: 9999; display: none; }
         #curtain-hint { color: #222; position: absolute; bottom: 50px; width: 100%; text-align: center; font-size: 12px; }
-    </style>
+
+        /**/
+        .slider-container { width: 80%; margin: 10px 0; text-align: center; color: #aaa; }
+        input[type=range] { width: 100%; accent-color: #00e676; }
+</style>
 </head>
 <body>
 
     <h1>Run Tracker</h1>
+
+
+    <div class="slider-container">
+       <label for="splitRange">Video Split: <span id="split-val" style="color:#fff; font-weight:bold;">20</span>s</label>
+       <input type="range" id="splitRange" min="10" max="300" step="10" value="20" oninput="updateLink()">
+       <div style="font-size: 10px; margin-top:5px;">⚠️ >60s increases crash risk</div>
+    </div>
+
+    <a id="start-btn" href="recorder-hybrid.html?split=20" class="btn btn-start">START RUN 🏃‍♂️</a>
+
 
     <a href="recorder-hybrid.html" class="btn btn-start">START RUN 🏃‍♂️</a>
 
@@ -38,6 +52,13 @@
         function toggleStealth() {
             const c = document.getElementById('curtain');
             c.style.display = (c.style.display === 'block') ? 'none' : 'block';
+        }
+
+        function updateLink() {
+            const val = document.getElementById('splitRange').value;
+            document.getElementById('split-val').innerText = val;
+            // Update the button's destination
+            document.getElementById('start-btn').href = `recorder-hybrid.html?split=${val}`;
         }
     </script>
 
