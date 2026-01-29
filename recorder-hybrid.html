@@ -88,10 +88,15 @@
         // --- CONFIGURATION ---
         const DB_NAME = "RunTrackerDB";
         const DB_VERSION = 99; 
+
+        // --- GET URL PARAMS ---
+        const urlParams = new URLSearchParams(window.location.search);
+        const userSplit = parseInt(urlParams.get('split'));        
         
-        // --- SETTING: 20 SECONDS ---
-        const AUTO_SPLIT_MS = 20000; 
-        const CHUNK_SIZE = 50000;
+        // --- SETTING: ---
+        // 2. SET DYNAMIC SPLIT (Default to 20000 if no param found)
+        // Note: We multiply by 1000 because input is in seconds, logic is in ms
+        const AUTO_SPLIT_MS = (userSplit && !isNaN(userSplit)) ? userSplit * 1000 : 20000;        const CHUNK_SIZE = 50000;
         
         // --- STATE ---
         let db = null;
@@ -248,11 +253,13 @@
             const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
             recordedChunks = []; // Clear Buffer
 
-            // Name: Run_YYYY-MM-DDT..._Clip_00X.mp4
+            // Name: Run_YYYY-MM-DDT_splitsize..._Clip_00X.mp4
             const d = new Date(sessionStartTimestamp);
             const dateStr = d.toISOString().split('T')[0];
             const timeStr = d.toTimeString().split(' ')[0].replace(/:/g, '-');
-            const filename = `Run_${dateStr}_${timeStr}_Clip_${String(videoSegmentCounter).padStart(3, '0')}.mp4`;
+            // Auto split length in sec (splitTag)  
+            const splitTag = (AUTO_SPLIT_MS / 1000) + "s"; // e.g., "20s" or "60s"
+            const filename = `Run_${dateStr}_${timeStr}_${splitTag}_Clip_${String(videoSegmentCounter).padStart(3, '0')}.mp4`;
             
             const endOffset = (Date.now() - sessionStartTimestamp) / 1000;
 
