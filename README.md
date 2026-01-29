@@ -5,7 +5,7 @@
             
 ## Description
 A lightweight web application that tracks GPS coordinates with UI for live recording images/video clips. 
-Designed to run directly in a mobile browser without installation. So, no cockies.
+Designed to run directly in a mobile browser without installation. So, no cookies.
 
 ## Features
 * **Hybrid Recording:** Captures images/ Records video and GPS location simultaneously.
